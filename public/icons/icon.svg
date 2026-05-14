@@ -1,0 +1,78 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="aura" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(89 30) rotate(128) scale(92 86)">
+      <stop stop-color="#2836FF" stop-opacity="0.62"/>
+      <stop offset="0.42" stop-color="#0D122C" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#09090B"/>
+    </radialGradient>
+    <radialGradient id="aura2" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(34 94) rotate(-45) scale(78)">
+      <stop stop-color="#14B8A6" stop-opacity="0.5"/>
+      <stop offset="0.48" stop-color="#111827" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#09090B" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="surface" x1="20" y1="10" x2="108" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#292A34"/>
+      <stop offset="0.48" stop-color="#111217"/>
+      <stop offset="1" stop-color="#060609"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="17" y1="7" x2="111" y2="121" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.38"/>
+      <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="29" y1="22" x2="99" y2="105" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="0.36" stop-color="#22D3EE"/>
+      <stop offset="0.62" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+    <linearGradient id="slash" x1="44" y1="92" x2="88" y2="41" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A3E635"/>
+      <stop offset="0.56" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#67E8F9"/>
+    </linearGradient>
+    <filter id="app-shadow" x="3" y="5" width="122" height="124" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="9" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <filter id="mark-shadow" x="16" y="18" width="96" height="98" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="6" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <filter id="glow" x="19" y="20" width="90" height="89" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <mask id="d-mask" maskUnits="userSpaceOnUse" x="24" y="24" width="80" height="80">
+      <rect width="128" height="128" fill="black"/>
+      <path d="M34 36C34 29.373 39.373 24 46 24H63C88.4 24 104 39.8 104 64C104 88.2 88.4 104 63 104H46C39.373 104 34 98.627 34 92V36Z" fill="white"/>
+      <path d="M55 47C55 44.239 57.239 42 60 42H65C78.2 42 86 50.5 86 64C86 77.5 78.2 86 65 86H60C57.239 86 55 83.761 55 81V47Z" fill="black"/>
+    </mask>
+    <mask id="slash-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="white"/>
+      <circle cx="64" cy="64" r="10.5" fill="black"/>
+    </mask>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#surface)" filter="url(#app-shadow)"/>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#aura)"/>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#aura2)"/>
+  <rect x="8.75" y="8.75" width="110.5" height="110.5" rx="27.25" stroke="url(#edge)" stroke-width="1.5"/>
+  <path d="M29 19.5C41 13.5 86.5 14.5 99 26" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="4.5" stroke-linecap="round"/>
+
+  <g filter="url(#glow)" opacity="0.55">
+    <path d="M34 36C34 29.373 39.373 24 46 24H63C88.4 24 104 39.8 104 64C104 88.2 88.4 104 63 104H46C39.373 104 34 98.627 34 92V36Z" fill="#3B82F6" mask="url(#d-mask)"/>
+    <path d="M44 89L82 40" stroke="#2DD4BF" stroke-width="13" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#mark-shadow)">
+    <path d="M34 36C34 29.373 39.373 24 46 24H63C88.4 24 104 39.8 104 64C104 88.2 88.4 104 63 104H46C39.373 104 34 98.627 34 92V36Z" fill="url(#mark)" mask="url(#d-mask)"/>
+    <path d="M44 89L82 40" stroke="url(#slash)" stroke-width="13" stroke-linecap="round" mask="url(#slash-cut)"/>
+  </g>
+
+  <path d="M46 33.5H61.5C82 33.5 94 45.4 94 64C94 82.6 82 94.5 61.5 94.5H46" stroke="#FFFFFF" stroke-opacity="0.19" stroke-width="4" stroke-linecap="round"/>
+  <path d="M45.5 36.5V91.5" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="4" stroke-linecap="round"/>
+
+  <circle cx="64" cy="64" r="10" fill="#08080B"/>
+  <circle cx="64" cy="64" r="5.5" fill="#F8FAFC"/>
+  <path d="M64 48.5V53M64 75V79.5M48.5 64H53M75 64H79.5" stroke="#F8FAFC" stroke-width="3.25" stroke-linecap="round"/>
+
+  <path d="M94 36L96.4 41.6L102 44L96.4 46.4L94 52L91.6 46.4L86 44L91.6 41.6L94 36Z" fill="#F8FAFC" fill-opacity="0.86"/>
+</svg>
