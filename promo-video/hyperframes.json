@@ -1,0 +1,8 @@
+{
+  "source": "index.html",
+  "output": "renders/dom-ai-annotator-promo.mp4",
+  "duration": 26,
+  "fps": 30,
+  "width": 1920,
+  "height": 1080
+}

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { MessageCircle, Ruler, Trash2, Type, X } from "lucide-react";
 import cssText from "./content.css?inline";
-import { createAnnotationDraft } from "./selector";
+import { createAnnotationDraft, getCssSelector } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
 import type { AnnotationDraft, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationStatus } from "../shared/storage";
@@ -35,6 +35,7 @@ type ComposerState = {
 type HoverInspection = {
   key: string;
   label: string;
+  element?: Element;
   viewportRect: RectSnapshot;
   documentRect: {
     x: number;
@@ -332,7 +333,7 @@ function App() {
 
       setMeasureAnchor((anchor) => {
         if (!anchor) return inspection;
-        if (anchor.key === inspection.key) return anchor;
+        if (isSameInspectionTarget(anchor, inspection)) return anchor;
 
         const pairKey = getMeasurementPairKey(anchor, inspection);
         const measurements = getElementDistanceLines(anchor.documentRect, inspection.documentRect);
@@ -592,7 +593,6 @@ function AnnotationPin({
         onHoverChange(true);
       }}
       onMouseLeave={() => {
-        setIsDismissed(false);
         onHoverChange(false);
       }}
       onFocus={() => onHoverChange(true)}
@@ -1006,8 +1006,10 @@ function MeasureLayer({
   hover: HoverInspection | null;
   pinnedMeasurements: PinnedMeasurement[];
 }) {
-  const measurements = anchor && hover && anchor !== hover
-    ? getElementDistanceLines(anchor.documentRect, hover.documentRect)
+  const liveAnchor = anchor ? getLiveInspection(anchor) : null;
+  const liveHover = hover ? getLiveInspection(hover) : null;
+  const measurements = liveAnchor && liveHover && !isSameInspectionTarget(liveAnchor, liveHover)
+    ? getElementDistanceLines(liveAnchor.documentRect, liveHover.documentRect)
     : [];
 
   return (
@@ -1015,47 +1017,47 @@ function MeasureLayer({
       {pinnedMeasurements.map((item) => (
         <MeasurementPair key={item.key} pair={item} />
       ))}
-      {anchor ? (
+      {liveAnchor ? (
         <div
           className="dom-ai-highlight dom-ai-measure-anchor"
           style={{
-            left: anchor.documentRect.x,
-            top: anchor.documentRect.y,
-            width: anchor.documentRect.width,
-            height: anchor.documentRect.height
+            left: liveAnchor.documentRect.x,
+            top: liveAnchor.documentRect.y,
+            width: liveAnchor.documentRect.width,
+            height: liveAnchor.documentRect.height
           }}
         />
       ) : null}
-      {hover ? (
+      {liveHover ? (
         <>
           <div
             className="dom-ai-highlight"
             style={{
-              left: hover.documentRect.x,
-              top: hover.documentRect.y,
-              width: hover.documentRect.width,
-              height: hover.documentRect.height
+              left: liveHover.documentRect.x,
+              top: liveHover.documentRect.y,
+              width: liveHover.documentRect.width,
+              height: liveHover.documentRect.height
             }}
           />
           <div
             className="dom-ai-hover-label"
             style={{
-              left: hover.documentRect.x,
-              top: Math.max(window.scrollY + 8, hover.documentRect.y - 34)
+              left: liveHover.documentRect.x,
+              top: Math.max(window.scrollY + 8, liveHover.documentRect.y - 34)
             }}
           >
-            <span>{anchor ? "测量目标" : "测量起点"}</span>
-            <b>{hover.label}</b>
+            <span>{liveAnchor ? "测量目标" : "测量起点"}</span>
+            <b>{liveHover.label}</b>
           </div>
         </>
       ) : null}
       {measurements.length ? <MeasurementOverlay measurements={measurements} idPrefix="preview" /> : null}
-      {anchor && hover && !measurements.length && anchor !== hover ? (
+      {liveAnchor && liveHover && !measurements.length && !isSameInspectionTarget(liveAnchor, liveHover) ? (
         <div
           className="dom-ai-measure-label"
           style={{
-            left: (anchor.documentRect.x + hover.documentRect.x + hover.documentRect.width) / 2,
-            top: (anchor.documentRect.y + hover.documentRect.y + hover.documentRect.height) / 2
+            left: (liveAnchor.documentRect.x + liveHover.documentRect.x + liveHover.documentRect.width) / 2,
+            top: (liveAnchor.documentRect.y + liveHover.documentRect.y + liveHover.documentRect.height) / 2
           }}
         >
           0px
@@ -1066,6 +1068,10 @@ function MeasureLayer({
 }
 
 function MeasurementPair({ pair }: { pair: PinnedMeasurement }) {
+  const from = getLiveInspection(pair.from);
+  const to = getLiveInspection(pair.to);
+  const measurements = getElementDistanceLines(from.documentRect, to.documentRect);
+
   return (
     <div
       className="dom-ai-measure-pinned-group"
@@ -1074,27 +1080,27 @@ function MeasurementPair({ pair }: { pair: PinnedMeasurement }) {
       <div
         className="dom-ai-highlight dom-ai-measure-pinned-box"
         style={{
-          left: pair.from.documentRect.x,
-          top: pair.from.documentRect.y,
-          width: pair.from.documentRect.width,
-          height: pair.from.documentRect.height
+          left: from.documentRect.x,
+          top: from.documentRect.y,
+          width: from.documentRect.width,
+          height: from.documentRect.height
         }}
       />
       <div
         className="dom-ai-highlight dom-ai-measure-pinned-box"
         style={{
-          left: pair.to.documentRect.x,
-          top: pair.to.documentRect.y,
-          width: pair.to.documentRect.width,
-          height: pair.to.documentRect.height
+          left: to.documentRect.x,
+          top: to.documentRect.y,
+          width: to.documentRect.width,
+          height: to.documentRect.height
         }}
       />
-      {pair.measurements.length ? <MeasurementOverlay measurements={pair.measurements} idPrefix={pair.key} /> : (
+      {measurements.length ? <MeasurementOverlay measurements={measurements} idPrefix={pair.key} /> : (
         <div
           className="dom-ai-measure-label"
           style={{
-            left: (pair.from.documentRect.x + pair.to.documentRect.x + pair.to.documentRect.width) / 2,
-            top: (pair.from.documentRect.y + pair.to.documentRect.y + pair.to.documentRect.height) / 2
+            left: (from.documentRect.x + to.documentRect.x + to.documentRect.width) / 2,
+            top: (from.documentRect.y + to.documentRect.y + to.documentRect.height) / 2
           }}
         >
           0px
@@ -1323,6 +1329,7 @@ function getElementInspection(element: Element): HoverInspection {
   return {
     key: getElementMeasurementKey(element, documentRect),
     label: getElementLabel(element),
+    element,
     viewportRect: rect,
     documentRect,
     fontSize: styles.fontSize,
@@ -1340,6 +1347,16 @@ function getElementInspection(element: Element): HoverInspection {
     padding: getBoxValue(styles, "padding"),
     borderRadius: styles.borderRadius
   };
+}
+
+function getLiveInspection(inspection: HoverInspection): HoverInspection {
+  if (!inspection.element?.isConnected || isInjectedElement(inspection.element)) return inspection;
+  return getElementInspection(inspection.element);
+}
+
+function isSameInspectionTarget(a: HoverInspection, b: HoverInspection): boolean {
+  if (a.element && b.element) return a.element === b.element;
+  return a.key === b.key;
 }
 
 function getAnnotationDraft(annotation: DomAnnotation): AnnotationDraft {
@@ -1422,7 +1439,11 @@ function getElementMeasurementKey(element: Element, rect: HoverInspection["docum
 }
 
 function getMeasurementPairKey(first: HoverInspection, second: HoverInspection): string {
-  return [first.key, second.key].sort().join("::");
+  return [getInspectionIdentity(first), getInspectionIdentity(second)].sort().join("::");
+}
+
+function getInspectionIdentity(inspection: HoverInspection): string {
+  return inspection.element ? getCssSelector(inspection.element) : inspection.key;
 }
 
 function getElementDistanceLines(from: HoverInspection["documentRect"], to: HoverInspection["documentRect"]): MeasurementLine[] {

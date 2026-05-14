@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="zh-CN" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #07111f;
+        color: #f8fafc;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 8% 4%, rgba(8, 124, 98, 0.32), transparent 31%),
+          radial-gradient(circle at 88% 5%, rgba(14, 165, 233, 0.2), transparent 30%),
+          radial-gradient(circle at 78% 90%, rgba(249, 115, 22, 0.14), transparent 24%),
+          linear-gradient(145deg, #07111f 0%, #0b1120 48%, #0f172a 100%);
+      }
+
+      .clip {
+        position: absolute;
+      }
+
+      .grid {
+        inset: 0;
+        opacity: 0.14;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(115deg, #000 0%, transparent 72%);
+      }
+
+      .brand {
+        left: 108px;
+        top: 72px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        font-size: 40px;
+        font-weight: 820;
+        letter-spacing: 0;
+      }
+
+      .brand img,
+      .final-card img {
+        width: 72px;
+        height: 72px;
+        filter: drop-shadow(0 20px 34px rgba(0, 0, 0, 0.34));
+      }
+
+      .headline {
+        left: 108px;
+        top: 246px;
+        width: 760px;
+        font-size: 92px;
+        line-height: 1.05;
+        font-weight: 850;
+        letter-spacing: 0;
+      }
+
+      .subhead {
+        left: 114px;
+        top: 566px;
+        width: 680px;
+        color: #b6c3d4;
+        font-size: 34px;
+        line-height: 1.42;
+        font-weight: 560;
+      }
+
+      .cta {
+        left: 114px;
+        top: 798px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        height: 70px;
+        padding: 0 30px;
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        border-radius: 14px;
+        background: #087c62;
+        color: white;
+        font-size: 24px;
+        font-weight: 760;
+        box-shadow: 0 24px 54px rgba(8, 124, 98, 0.32);
+      }
+
+      .cta-mark {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #38bdf8;
+      }
+
+      .browser {
+        right: 86px;
+        top: 118px;
+        width: 900px;
+        height: 700px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 24px;
+        overflow: hidden;
+        background: rgba(248, 250, 252, 0.96);
+        color: #111827;
+        box-shadow: 0 46px 110px rgba(0, 0, 0, 0.38);
+      }
+
+      .browser-bar {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 26px;
+        border-bottom: 1px solid #dbe3ee;
+        background: #ffffff;
+      }
+
+      .dot {
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: #cbd5e1;
+      }
+
+      .address {
+        height: 34px;
+        flex: 1;
+        display: flex;
+        align-items: center;
+        padding: 0 18px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #64748b;
+        font-size: 16px;
+        font-weight: 650;
+      }
+
+      .page {
+        position: relative;
+        height: calc(100% - 64px);
+        padding: 48px 332px 48px 46px;
+      }
+
+      .page-title {
+        font-size: 48px;
+        line-height: 1.06;
+        font-weight: 850;
+        color: #0f172a;
+        width: 390px;
+      }
+
+      .page-copy {
+        margin-top: 22px;
+        width: 410px;
+        color: #5b6778;
+        font-size: 20px;
+        line-height: 1.55;
+        font-weight: 560;
+      }
+
+      .page-card {
+        margin-top: 40px;
+        width: 420px;
+        padding: 26px;
+        border: 1px solid #d8e0eb;
+        border-radius: 16px;
+        background: #ffffff;
+        box-shadow: 0 20px 44px rgba(15, 23, 42, 0.1);
+      }
+
+      .page-card h4 {
+        font-size: 22px;
+        color: #0f172a;
+      }
+
+      .page-card p {
+        margin-top: 12px;
+        color: #64748b;
+        font-size: 17px;
+        line-height: 1.5;
+      }
+
+      .highlight-box {
+        left: 63px;
+        top: 236px;
+        width: 452px;
+        height: 178px;
+        border: 4px solid #0f9f78;
+        border-radius: 18px;
+        box-shadow: 0 0 0 999px rgba(15, 23, 42, 0.05), 0 16px 38px rgba(15, 159, 120, 0.2);
+      }
+
+      .pin {
+        left: 495px;
+        top: 214px;
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: white;
+        background: #0f9f78;
+        border: 4px solid white;
+        font-size: 20px;
+        font-weight: 850;
+        box-shadow: 0 16px 32px rgba(15, 159, 120, 0.34);
+      }
+
+      .comment-pop {
+        left: 330px;
+        top: 154px;
+        width: 250px;
+        padding: 18px;
+        border-radius: 16px;
+        background: #0b1120;
+        color: #f8fafc;
+        box-shadow: 0 28px 70px rgba(15, 23, 42, 0.42);
+      }
+
+      .comment-pop strong {
+        font-size: 18px;
+      }
+
+      .comment-pop p {
+        margin-top: 10px;
+        color: #cbd5e1;
+        font-size: 16px;
+        line-height: 1.45;
+      }
+
+      .side-panel {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 310px;
+        height: 636px;
+        padding: 22px;
+        border-left: 1px solid #d7e0eb;
+        background: #f8fafc;
+      }
+
+      .side-panel h3 {
+        font-size: 22px;
+        color: #111827;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .tool-button {
+        height: 36px;
+        display: flex;
+        align-items: center;
+        padding: 0 13px;
+        border-radius: 10px;
+        background: #087c62;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 760;
+      }
+
+      .tool-button.secondary {
+        background: #e8eef6;
+        color: #334155;
+      }
+
+      .anno-card {
+        margin-top: 14px;
+        padding: 15px;
+        border: 1px solid #d8e0eb;
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+      }
+
+      .anno-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 760;
+      }
+
+      .status {
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #eefdf7;
+        color: #087c62;
+      }
+
+      .anno-card p {
+        margin-top: 10px;
+        color: #253244;
+        font-size: 15px;
+        line-height: 1.45;
+        font-weight: 610;
+      }
+
+      .label {
+        left: 112px;
+        top: 92px;
+        color: #7dd3fc;
+        font-size: 21px;
+        font-weight: 820;
+        letter-spacing: 0.08em;
+      }
+
+      .scene-title {
+        left: 112px;
+        top: 166px;
+        width: 660px;
+        font-size: 70px;
+        line-height: 1.08;
+        font-weight: 850;
+        letter-spacing: 0;
+      }
+
+      .caption {
+        left: 118px;
+        top: 360px;
+        width: 620px;
+        color: #b6c3d4;
+        font-size: 30px;
+        line-height: 1.45;
+        font-weight: 560;
+      }
+
+      .product-panel {
+        right: 112px;
+        top: 120px;
+        width: 850px;
+        height: 748px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 24px;
+        overflow: hidden;
+        background: #f8fafc;
+        color: #111827;
+        box-shadow: 0 46px 110px rgba(0, 0, 0, 0.38);
+      }
+
+      .panel-head {
+        height: 78px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 28px;
+        border-bottom: 1px solid #dbe3ee;
+        background: #ffffff;
+      }
+
+      .panel-head strong {
+        font-size: 24px;
+      }
+
+      .url-pill {
+        max-width: 420px;
+        padding: 9px 14px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #64748b;
+        font-size: 15px;
+        font-weight: 680;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .panel-body {
+        padding: 24px 28px 28px;
+      }
+
+      .filters {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 8px;
+      }
+
+      .filter {
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        background: #eef2f7;
+        color: #475569;
+        font-size: 13px;
+        font-weight: 760;
+      }
+
+      .filter.active {
+        background: #087c62;
+        color: white;
+      }
+
+      .feedback-list {
+        margin-top: 22px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .feedback-card {
+        display: grid;
+        grid-template-columns: 42px 1fr 108px;
+        align-items: start;
+        gap: 14px;
+        padding: 16px;
+        border: 1px solid #d8e0eb;
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+      }
+
+      .num {
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: #eefdf7;
+        color: #087c62;
+        font-size: 18px;
+        font-weight: 850;
+      }
+
+      .feedback-card h4 {
+        font-size: 19px;
+        color: #111827;
+      }
+
+      .feedback-card p {
+        margin-top: 8px;
+        color: #64748b;
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      .priority {
+        justify-self: end;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #fff7ed;
+        color: #c2410c;
+        font-size: 13px;
+        font-weight: 820;
+      }
+
+      .measure-stage {
+        position: relative;
+        height: 504px;
+        margin-top: 22px;
+        padding: 36px;
+        border: 1px solid #d8e0eb;
+        border-radius: 18px;
+        background:
+          linear-gradient(#eef2f7 1px, transparent 1px),
+          linear-gradient(90deg, #eef2f7 1px, transparent 1px),
+          #ffffff;
+        background-size: 28px 28px;
+      }
+
+      .measure-box {
+        position: absolute;
+        border: 3px solid;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      .m1 {
+        left: 60px;
+        top: 88px;
+        width: 250px;
+        height: 118px;
+        border-color: #0f9f78;
+      }
+
+      .m2 {
+        right: 92px;
+        top: 238px;
+        width: 280px;
+        height: 128px;
+        border-color: #0ea5e9;
+      }
+
+      .measure-line {
+        position: absolute;
+        left: 302px;
+        top: 204px;
+        width: 248px;
+        height: 3px;
+        background: #f97316;
+        transform: rotate(31deg);
+        transform-origin: left center;
+      }
+
+      .measure-tag {
+        position: absolute;
+        left: 382px;
+        top: 226px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        color: white;
+        background: #f97316;
+        font-size: 18px;
+        font-weight: 850;
+        box-shadow: 0 12px 28px rgba(249, 115, 22, 0.25);
+      }
+
+      .markdown-card {
+        margin-top: 22px;
+        padding: 22px;
+        border-radius: 18px;
+        background: #0b1120;
+        color: #dbeafe;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 18px;
+        line-height: 1.65;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+
+      .markdown-card span {
+        color: #7dd3fc;
+      }
+
+      .import-grid {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+
+      .import-box {
+        min-height: 180px;
+        padding: 20px;
+        border: 1px solid #d8e0eb;
+        border-radius: 16px;
+        background: white;
+      }
+
+      .import-box h4 {
+        font-size: 20px;
+      }
+
+      .import-box p {
+        margin-top: 12px;
+        color: #64748b;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .final-card {
+        inset: 0;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        padding-bottom: 30px;
+      }
+
+      .final-card-inner {
+        width: 760px;
+      }
+
+      .final-card h2 {
+        margin-top: 28px;
+        font-size: 86px;
+        line-height: 1;
+        font-weight: 850;
+        letter-spacing: 0;
+      }
+
+      .final-card p {
+        margin: 26px auto 0;
+        width: 680px;
+        color: #b6c3d4;
+        font-size: 31px;
+        line-height: 1.45;
+        font-weight: 560;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="dom-ai-annotator-promo" data-width="1920" data-height="1080" data-start="0" data-duration="26">
+      <div id="bg-grid" class="clip grid" data-start="0" data-duration="26" data-track-index="0"></div>
+
+      <div id="hero-brand" class="clip brand" data-start="0" data-duration="7" data-track-index="1">
+        <img id="hero-icon" src="./assets/icon-128.png" alt="" />
+        <span>DOM AI 标注器</span>
+      </div>
+      <h1 id="hero-title" class="clip headline" data-start="0.2" data-duration="6.8" data-track-index="2">
+        把网页反馈标到 DOM 上
+      </h1>
+      <p id="hero-subhead" class="clip subhead" data-start="0.6" data-duration="6.4" data-track-index="3">
+        设计、产品、开发和 AI 不再靠截图猜位置。点选元素、记录上下文、复制成可执行的修改说明。
+      </p>
+      <div id="hero-cta" class="clip cta" data-start="1" data-duration="6" data-track-index="4">
+        <span class="cta-mark"></span>
+        <span>Chrome 侧边栏里的网页审阅工作台</span>
+      </div>
+
+      <div id="hero-browser" class="clip browser" data-start="0.5" data-duration="6.4" data-track-index="5">
+        <div class="browser-bar">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <div class="address">app.example.com/pricing</div>
+        </div>
+        <div class="page">
+          <h2 class="page-title">Team analytics dashboard</h2>
+          <p class="page-copy">A busy product page with copy, cards, navigation, and UI details waiting for review.</p>
+          <div class="page-card">
+            <h4>Conversion card</h4>
+            <p>The label spacing is tight and the CTA state needs a clearer contrast pass.</p>
+          </div>
+          <div id="hero-highlight" class="clip highlight-box" data-start="1.8" data-duration="5" data-track-index="6"></div>
+          <div id="hero-pin" class="clip pin" data-start="2" data-duration="4.8" data-track-index="7">1</div>
+          <div id="hero-comment" class="clip comment-pop" data-start="2.4" data-duration="4.4" data-track-index="8">
+            <strong>点击 DOM 元素，直接写反馈</strong>
+            <p>自动记录 selector、XPath、位置、视口和关键样式。</p>
+          </div>
+          <div class="side-panel">
+            <h3>页面标注</h3>
+            <div class="toolbar">
+              <div class="tool-button">选择元素</div>
+              <div class="tool-button secondary">测量距离</div>
+            </div>
+            <div class="anno-card">
+              <div class="anno-head"><span>#1 button.primary</span><span class="status">待处理</span></div>
+              <p>CTA 与说明文字距离过近，移动端需要保留呼吸感。</p>
+            </div>
+            <div class="anno-card">
+              <div class="anno-head"><span>#2 .pricing-card</span><span class="status">已发送</span></div>
+              <p>卡片层级弱，建议补充 hover 与边框状态。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="manage-label" class="clip label" data-start="7.2" data-duration="5" data-track-index="20">
+        REVIEW WORKFLOW
+      </div>
+      <h2 id="manage-title" class="clip scene-title" data-start="7.3" data-duration="5" data-track-index="21">
+        反馈不是散落评论，是可流转的任务
+      </h2>
+      <p id="manage-caption" class="clip caption" data-start="7.8" data-duration="4.5" data-track-index="22">
+        按页面和状态管理每条标注：待处理、已发送、已修改、仍有问题、已通过、不处理。
+      </p>
+      <div id="manage-panel" class="clip product-panel" data-start="7.25" data-duration="5.1" data-track-index="23">
+        <div class="panel-head">
+          <strong>标注管理</strong>
+          <div class="url-pill">app.example.com/pricing · 6 条标注</div>
+        </div>
+        <div class="panel-body">
+          <div class="filters">
+            <div class="filter active">全部</div>
+            <div class="filter">待处理</div>
+            <div class="filter">已发送</div>
+            <div class="filter">已修改</div>
+            <div class="filter">仍有问题</div>
+            <div class="filter">已通过</div>
+          </div>
+          <div class="feedback-list">
+            <div class="feedback-card">
+              <div class="num">1</div>
+              <div>
+                <h4>主 CTA 间距太紧</h4>
+                <p>selector: main section:nth-child(2) button.primary，记录了元素位置和样式快照。</p>
+              </div>
+              <div class="priority">高优先级</div>
+            </div>
+            <div class="feedback-card">
+              <div class="num">2</div>
+              <div>
+                <h4>卡片 hover 层级不足</h4>
+                <p>点击卡片可回到原页面点位，高亮真实 DOM 元素。</p>
+              </div>
+              <div class="priority">中优先级</div>
+            </div>
+            <div class="feedback-card">
+              <div class="num">3</div>
+              <div>
+                <h4>底部表单缺少错误态说明</h4>
+                <p>复制给 AI 后，待处理自动流转为已发送。</p>
+              </div>
+              <div class="priority">低优先级</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="measure-label" class="clip label" data-start="12.9" data-duration="4.9" data-track-index="20">
+        MEASURE PRECISELY
+      </div>
+      <h2 id="measure-title" class="clip scene-title" data-start="13" data-duration="4.9" data-track-index="21">
+        像审稿一样量出页面细节
+      </h2>
+      <p id="measure-caption" class="clip caption" data-start="13.5" data-duration="4.2" data-track-index="22">
+        选择两个元素即可固定距离；继续测下一组，给布局反馈明确的像素依据。
+      </p>
+      <div id="measure-panel" class="clip product-panel" data-start="13.05" data-duration="4.9" data-track-index="23">
+        <div class="panel-head">
+          <strong>测量距离</strong>
+          <div class="url-pill">按 M 开始 · Esc 暂停或退出</div>
+        </div>
+        <div class="panel-body">
+          <div class="measure-stage">
+            <div class="measure-box m1"></div>
+            <div class="measure-box m2"></div>
+            <div class="measure-line"></div>
+            <div class="measure-tag">168 px</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="export-label" class="clip label" data-start="18.1" data-duration="4.9" data-track-index="20">
+        AI READY EXPORT
+      </div>
+      <h2 id="export-title" class="clip scene-title" data-start="18.2" data-duration="4.9" data-track-index="21">
+        一键复制成 AI 看得懂的 Markdown
+      </h2>
+      <p id="export-caption" class="clip caption" data-start="18.7" data-duration="4.2" data-track-index="22">
+        页面 URL、标题、selector、XPath、视口位置、状态和评论，一起交给 AI 或开发。
+      </p>
+      <div id="export-panel" class="clip product-panel" data-start="18.2" data-duration="5.1" data-track-index="23">
+        <div class="panel-head">
+          <strong>导出与复现</strong>
+          <div class="url-pill">复制 Markdown · 粘贴导入标注</div>
+        </div>
+        <div class="panel-body">
+          <div class="markdown-card">
+            <div><span>## 页面反馈</span></div>
+            <div>URL: https://app.example.com/pricing</div>
+            <div>1. selector: main .pricing-card button</div>
+            <div>XPath: /html/body/main/section[2]/button</div>
+            <div>评论: CTA 与说明文字距离过近，需增加 16px。</div>
+          </div>
+          <div class="import-grid">
+            <div class="import-box">
+              <h4>跨页面切换</h4>
+              <p>面板保留已保存 URL，切到对应页面即可定位和编辑原标注。</p>
+            </div>
+            <div class="import-box">
+              <h4>粘贴导入</h4>
+              <p>别人复制来的 Markdown 可以导回插件，重新看到点位与任务状态。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="final-card" class="clip final-card" data-start="23.4" data-duration="2.6" data-track-index="30" data-layout-allow-overflow>
+        <div class="final-card-inner">
+          <img id="final-icon" src="./assets/icon-final.png" alt="" />
+          <h2 id="final-title">DOM AI 标注器</h2>
+          <p id="final-subtitle">在真实网页上标注、测量、导出，让 UI 反馈进入 AI 和开发工作流。</p>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      tl.from("#hero-brand", { opacity: 0, y: -22, duration: 0.7 }, 0);
+      tl.from("#hero-title", { opacity: 0, y: 36, duration: 0.8 }, 0.2);
+      tl.from("#hero-subhead", { opacity: 0, y: 28, duration: 0.8 }, 0.55);
+      tl.from("#hero-cta", { opacity: 0, y: 24, scale: 0.96, duration: 0.7 }, 1);
+      tl.from("#hero-browser", { opacity: 0, x: 92, scale: 0.94, duration: 0.85 }, 0.55);
+      tl.from("#hero-highlight", { opacity: 0, scale: 0.95, duration: 0.45 }, 1.8);
+      tl.from("#hero-pin", { opacity: 0, y: -18, scale: 0.72, duration: 0.45 }, 2);
+      tl.from("#hero-comment", { opacity: 0, y: 24, scale: 0.94, duration: 0.55 }, 2.35);
+      tl.from("#hero-browser .anno-card", { opacity: 0, x: 26, duration: 0.42 }, 2.7);
+      tl.to("#hero-browser", { scale: 1.018, duration: 4.4 }, 2.2);
+      tl.to("#hero-brand, #hero-title, #hero-subhead, #hero-cta, #hero-browser", { opacity: 0, y: -24, duration: 0.55 }, 6.75);
+      tl.set("#hero-brand, #hero-title, #hero-subhead, #hero-cta, #hero-browser", { opacity: 0, visibility: "hidden" }, 7.25);
+
+      tl.from("#manage-label", { opacity: 0, y: -18, duration: 0.45 }, 7.2);
+      tl.from("#manage-title", { opacity: 0, y: 34, duration: 0.55 }, 7.3);
+      tl.from("#manage-caption", { opacity: 0, y: 24, duration: 0.55 }, 7.75);
+      tl.from("#manage-panel", { opacity: 0, x: 90, scale: 0.94, duration: 0.65 }, 7.3);
+      tl.from("#manage-panel .filter, #manage-panel .feedback-card", { opacity: 0, y: 18, duration: 0.35 }, 7.85);
+      tl.to("#manage-panel", { scale: 1.016, duration: 3.75 }, 8.25);
+      tl.to("#manage-label, #manage-title, #manage-caption, #manage-panel", { opacity: 0, y: -24, duration: 0.45 }, 12.35);
+      tl.set("#manage-label, #manage-title, #manage-caption, #manage-panel", { opacity: 0, visibility: "hidden" }, 12.85);
+
+      tl.from("#measure-label", { opacity: 0, y: -18, duration: 0.45 }, 12.9);
+      tl.from("#measure-title", { opacity: 0, y: 34, duration: 0.55 }, 13);
+      tl.from("#measure-caption", { opacity: 0, y: 24, duration: 0.55 }, 13.45);
+      tl.from("#measure-panel", { opacity: 0, x: 90, scale: 0.94, duration: 0.65 }, 13.05);
+      tl.from("#measure-panel .measure-box", { opacity: 0, scale: 0.92, duration: 0.4 }, 13.65);
+      tl.from("#measure-panel .measure-line, #measure-panel .measure-tag", { opacity: 0, scaleX: 0.1, duration: 0.55 }, 14.1);
+      tl.to("#measure-panel", { scale: 1.018, duration: 3.25 }, 14);
+      tl.to("#measure-label, #measure-title, #measure-caption, #measure-panel", { opacity: 0, y: -24, duration: 0.45 }, 17.85);
+      tl.set("#measure-label, #measure-title, #measure-caption, #measure-panel", { opacity: 0, visibility: "hidden" }, 18.1);
+
+      tl.from("#export-label", { opacity: 0, y: -18, duration: 0.45 }, 18.1);
+      tl.from("#export-title", { opacity: 0, y: 34, duration: 0.55 }, 18.2);
+      tl.from("#export-caption", { opacity: 0, y: 24, duration: 0.55 }, 18.65);
+      tl.from("#export-panel", { opacity: 0, x: 90, scale: 0.94, duration: 0.65 }, 18.2);
+      tl.from("#export-panel .markdown-card, #export-panel .import-box", { opacity: 0, y: 18, duration: 0.36 }, 18.75);
+      tl.to("#export-panel", { scale: 1.016, duration: 3.6 }, 19);
+      tl.to("#export-label, #export-title, #export-caption, #export-panel", { opacity: 0, y: -24, duration: 0.45 }, 23.05);
+      tl.set("#export-label, #export-title, #export-caption, #export-panel", { opacity: 0, visibility: "hidden" }, 23.32);
+
+      tl.from("#final-card", { opacity: 0, scale: 1.03, duration: 0.7 }, 23.4);
+      tl.from("#final-icon", { opacity: 0, y: 28, scale: 0.88, duration: 0.6 }, 23.75);
+      tl.from("#final-title", { opacity: 0, y: 32, duration: 0.55 }, 24.05);
+      tl.from("#final-subtitle", { opacity: 0, y: 24, duration: 0.55 }, 24.35);
+
+      window.__timelines["dom-ai-annotator-promo"] = tl;
+    </script>
+  </body>
+</html>
