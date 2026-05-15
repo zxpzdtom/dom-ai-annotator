@@ -8,9 +8,9 @@ import {
   Code2,
   Crosshair,
   FileInput,
+  Globe2,
   ListChecks,
   MoreHorizontal,
-  RefreshCw,
   Ruler,
   Trash2,
   X
@@ -30,6 +30,7 @@ import {
 } from "../shared/storage";
 import { exportAnnotationsAsMarkdown, importAnnotationsFromMarkdown } from "../shared/exporters";
 import { getExcludedUrlReason, isExcludedUrl } from "../shared/excludedUrls";
+import { writeClipboardText } from "../shared/clipboard";
 
 type ActiveTab = {
   id?: number;
@@ -73,6 +74,7 @@ function App() {
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [selectedPageUrl, setSelectedPageUrl] = useState("");
   const [confirmClearPage, setConfirmClearPage] = useState(false);
+  const [pageLoadTick, setPageLoadTick] = useState(0);
 
   const loadTab = useCallback(async () => {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -91,9 +93,15 @@ function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const handleTabActivated = () => void refresh();
+    const handleTabActivated = () => {
+      setPageLoadTick((tick) => tick + 1);
+      void refresh();
+    };
     const handleTabUpdated = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
       if (tab?.id === tabId && (changeInfo.status === "complete" || changeInfo.url || changeInfo.title)) {
+        if (changeInfo.status === "complete" || changeInfo.url) {
+          setPageLoadTick((tick) => tick + 1);
+        }
         void refresh();
       }
     };
@@ -115,6 +123,12 @@ function App() {
   const currentUrl = tab?.url ?? "";
   const currentExcludedReason = getExcludedUrlReason(currentUrl);
   const isCurrentPageExcluded = Boolean(currentExcludedReason);
+  useEffect(() => {
+    setError("");
+    setIsPicking(false);
+    setIsMeasuring(false);
+  }, [currentUrl]);
+
   useEffect(() => {
     if (currentUrl && !isCurrentPageExcluded && !selectedPageUrl) setSelectedPageUrl(currentUrl);
   }, [currentUrl, isCurrentPageExcluded, selectedPageUrl]);
@@ -156,7 +170,6 @@ function App() {
     [annotations, viewedUrl]
   );
 
-  const totalCount = pageAnnotations.length;
   const filteredAnnotations = useMemo(
     () => pageAnnotations.filter((item) => matchesFilter(normalizeStatus(item.status), statusFilter)),
     [pageAnnotations, statusFilter]
@@ -171,6 +184,15 @@ function App() {
   );
   const selectedCount = selectedIds.length;
   const canInspect = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded && isViewingActivePage);
+
+  useEffect(() => {
+    if (!tab?.id || !canInspect) return;
+    void ensureContentScript(tab.id).then(() => {
+      setError((current) => (isContentScriptErrorText(current) ? "" : current));
+    }).catch(() => {
+      // Tool actions surface injection failures. Initial pin rendering can fail silently.
+    });
+  }, [canInspect, pageLoadTick, tab?.id]);
 
   useEffect(() => {
     setConfirmClearPage(false);
@@ -189,8 +211,8 @@ function App() {
       await sendContentMessage(tab.id, { type: "DOM_AI_START_PICKING" });
       setIsPicking(true);
       setIsMeasuring(false);
-    } catch {
-      setError("当前页面暂时不能标注。请刷新页面后再试，或避开 chrome:// 这类浏览器系统页面。");
+    } catch (error) {
+      setError(getContentScriptErrorMessage(error, "标注"));
     }
   }
 
@@ -211,8 +233,8 @@ function App() {
       await sendContentMessage(tab.id, { type: "DOM_AI_START_MEASURING" });
       setIsMeasuring(true);
       setIsPicking(false);
-    } catch {
-      setError("当前页面暂时不能测量。请刷新页面后再试，或避开 chrome:// 这类浏览器系统页面。");
+    } catch (error) {
+      setError(getContentScriptErrorMessage(error, "测量"));
     }
   }
 
@@ -228,6 +250,22 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableEvent(event)) return;
+
+      if (event.key.toLowerCase() === "c" && !event.metaKey && !event.ctrlKey && !event.altKey && canInspect) {
+        event.preventDefault();
+        event.stopPropagation();
+        void startPicking();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "m" && !event.metaKey && !event.ctrlKey && !event.altKey && canInspect) {
+        event.preventDefault();
+        event.stopPropagation();
+        void (isMeasuring ? stopMeasuring() : startMeasuring());
+        return;
+      }
+
       if (event.key !== "Escape" || (!isPicking && !isMeasuring)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -237,7 +275,7 @@ function App() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [isMeasuring, isPicking, tab?.id]);
+  }, [canInspect, isMeasuring, isPicking, tab?.id]);
 
   async function focusAnnotation(id: string) {
     if (!isViewingActivePage) {
@@ -248,8 +286,8 @@ function App() {
     setError("");
     try {
       await sendContentMessage(tab.id, { type: "DOM_AI_FOCUS_ANNOTATION", id });
-    } catch {
-      setError("无法定位到页面标注。请确认当前标签页已加载完成。");
+    } catch (error) {
+      setError(getContentScriptErrorMessage(error, "定位"));
     }
   }
 
@@ -262,18 +300,23 @@ function App() {
     setError("");
     try {
       await sendContentMessage(tab.id, { type: "DOM_AI_EDIT_ANNOTATION", id });
-    } catch {
-      setError("无法打开页面编辑框。请确认当前标签页已加载完成。");
+    } catch (error) {
+      setError(getContentScriptErrorMessage(error, "编辑"));
     }
   }
 
   async function copy() {
-    await navigator.clipboard.writeText(exportAnnotationsAsMarkdown(pageAnnotations));
-    if (viewedUrl) {
-      await updateAnnotationStatusesForUrl(viewedUrl, ["pending"], "sent");
+    setError("");
+    try {
+      await writeClipboardText(exportAnnotationsAsMarkdown(pageAnnotations));
+      if (viewedUrl) {
+        await updateAnnotationStatusesForUrl(viewedUrl, ["pending"], "sent");
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1300);
+    } catch {
+      setError("复制失败。请确认浏览器允许当前页面写入剪贴板，或稍后重试。");
     }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1300);
   }
 
   function pasteAnnotations() {
@@ -350,38 +393,20 @@ function App() {
 
   return (
     <main className="mx-auto flex h-dvh w-full max-w-[560px] flex-col overflow-hidden bg-[#f6f7f9] text-ink-900 shadow-[0_0_0_1px_rgba(17,24,39,0.06)]">
-      <header className="shrink-0 border-b border-black/[0.06] bg-[#f6f7f9] px-4 pb-2 pt-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-ink-950 text-white shadow-[0_8px_18px_rgba(17,24,39,0.16)]">
-              <Crosshair size={17} />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-[16px] font-extrabold leading-tight tracking-normal text-ink-950">DOM AI 标注器</h1>
-              <p className="mt-0.5 truncate text-[11px] font-semibold text-ink-400">{totalCount} 条反馈 · {isViewingActivePage ? "当前页面" : "其他页面"}</p>
-            </div>
-          </div>
-          <button
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-ink-500 shadow-[0_1px_2px_rgba(17,24,39,0.08),inset_0_0_0_1px_rgba(17,24,39,0.08)] transition-[background-color,color,transform] duration-150 hover:text-ink-900 active:scale-[0.96]"
-            aria-label="刷新标注"
-            onClick={() => void refresh()}
-          >
-            <RefreshCw size={17} />
-          </button>
-        </div>
+      <header className="shrink-0 border-b border-black/[0.06] bg-[#f6f7f9] px-4 pb-2 pt-2">
+        {pageOptions.length ? (
+          <PageDropdown
+            options={pageOptions}
+            value={viewedUrl}
+            currentUrl={currentUrl}
+            onChange={(url) => {
+              setSelectedPageUrl(url);
+              setError("");
+            }}
+          />
+        ) : null}
 
-        <div className="mt-2">
-          {pageOptions.length ? (
-            <PageDropdown
-              options={pageOptions}
-              value={viewedUrl}
-              currentUrl={currentUrl}
-              onChange={(url) => {
-                setSelectedPageUrl(url);
-                setError("");
-              }}
-            />
-          ) : null}
+        <div>
           {!isViewingActivePage && viewedUrl ? (
             <div className="mt-2 rounded-xl bg-note-50 px-3 py-2 text-xs font-semibold leading-5 text-note-700">
               <p>正在查看其他页面的标注。定位和编辑需要打开标注所属页面。</p>
@@ -406,33 +431,35 @@ function App() {
               </div>
             </div>
           ) : null}
-          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(116px,0.42fr)] gap-2">
+          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(104px,0.4fr)] gap-2">
             <button
-              className="inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-xl bg-[#0b1120] px-3 text-sm font-bold text-white shadow-[0_10px_22px_rgba(17,24,39,0.16)] transition-[background-color,transform] duration-150 hover:bg-[#1f2937] active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500 disabled:shadow-none"
+              className="inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-xl bg-[#0b1120] px-3 text-[13px] font-bold text-white shadow-[0_8px_18px_rgba(17,24,39,0.14)] transition-[background-color,transform] duration-150 hover:bg-[#1f2937] active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500 disabled:shadow-none"
               disabled={!canInspect}
               onClick={() => void startPicking()}
             >
-              <Crosshair size={17} />
+              <Crosshair size={16} />
               选择元素
               <ShortcutBadge active>C</ShortcutBadge>
             </button>
             <button
-              className={`inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-xl px-3 text-sm font-bold shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500 ${
+              className={`inline-flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-[13px] font-bold shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500 ${
                 isMeasuring ? "bg-ink-950 text-white" : "bg-white text-ink-800 hover:bg-ink-50"
               }`}
               disabled={!canInspect}
+              aria-label={isMeasuring ? "结束测量" : "开始测量"}
+              title={isMeasuring ? "结束测量" : "测量"}
               onClick={() => void (isMeasuring ? stopMeasuring() : startMeasuring())}
             >
-              <Ruler size={16} />
-              {isMeasuring ? "结束测量" : "测量"}
+              <Ruler size={15} />
+              <span className="whitespace-nowrap">{isMeasuring ? "结束" : "测量"}</span>
               <ShortcutBadge active={isMeasuring}>M</ShortcutBadge>
             </button>
           </div>
-          <div className="scroll-mask-x scrollbar-none mt-2 flex gap-1 overflow-x-auto rounded-xl border-t border-black/[0.06] pt-2">
+          <div className="scroll-mask-x scrollbar-none -mx-1 mt-2 flex gap-1 overflow-x-auto overflow-y-visible px-1 py-1">
             {(Object.keys(filterLabels) as StatusFilter[]).map((filter) => (
               <button
                 key={filter}
-                className={`inline-flex h-8 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-extrabold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
+                className={`inline-flex h-8 shrink-0 items-center gap-1 rounded-[10px] px-2 text-xs font-extrabold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
                   statusFilter === filter
                     ? "bg-white text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12),0_1px_2px_rgba(17,24,39,0.08)]"
                     : "text-ink-500 hover:bg-white/70 hover:text-ink-800"
@@ -477,8 +504,8 @@ function App() {
       </header>
 
       {importDialogOpen ? (
-        <div className="fixed inset-0 z-50 bg-ink-950/28 p-4 backdrop-blur-sm">
-          <div className="mx-auto mt-10 max-w-xl rounded-2xl bg-white p-3 shadow-[0_24px_70px_rgba(17,24,39,0.24)]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/28 p-4 backdrop-blur-sm">
+          <div className="max-h-[calc(100dvh-32px)] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-3 shadow-[0_24px_70px_rgba(17,24,39,0.24)]">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-extrabold text-ink-950">粘贴导入标注</h2>
@@ -514,7 +541,7 @@ function App() {
             ) : null}
             <div className="mt-3 flex justify-end gap-2">
               <button
-                className="h-10 rounded-xl bg-white px-3 text-sm font-bold text-ink-700 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+                className="h-9 rounded-lg bg-white px-2.5 text-xs font-bold text-ink-700 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
                 onClick={() => {
                   setImportDialogOpen(false);
                   setImportError("");
@@ -523,7 +550,7 @@ function App() {
                 取消
               </button>
               <button
-                className="h-10 rounded-xl bg-brand-600 px-3 text-sm font-bold text-white shadow-[0_8px_18px_rgba(15,159,120,0.22)] transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96]"
+                className="h-9 rounded-lg bg-brand-600 px-2.5 text-xs font-bold text-white shadow-[0_6px_14px_rgba(15,159,120,0.2)] transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96]"
                 onClick={() => void importAnnotationsText(importText)}
               >
                 导入标注
@@ -571,7 +598,7 @@ function App() {
                 <p className="mt-2 text-[11px] font-semibold text-ink-400">勾选卡片后可批量操作</p>
               ) : null}
             </div>
-            <div className="dom-ai-masonry border-y border-black/[0.06] bg-white">
+            <div className="dom-ai-masonry bg-white">
             {filteredAnnotations.map((annotation, index) => (
               <AnnotationCard
                 key={annotation.id}
@@ -593,7 +620,7 @@ function App() {
             </div>
           </>
         ) : (
-          <div className="px-4 py-4">
+          <div className="flex min-h-full items-center justify-center px-5 py-10">
           {isCurrentPageExcluded && !viewedUrl ? (
             <ExcludedState reason={currentExcludedReason || "当前页面已排除"} />
           ) : (
@@ -605,40 +632,53 @@ function App() {
 
       <footer className="z-30 shrink-0 border-t border-black/[0.06] bg-[#f6f7f9]/92 px-3 py-2 backdrop-blur">
         <div className="flex items-center gap-2">
-          <button
-            className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:text-ink-300"
-            disabled={!pageAnnotations.length}
-            onClick={() => void copy()}
-          >
-            {copied ? <CheckCircle2 size={16} /> : <Clipboard size={16} />}
-            <span className="truncate">{copied ? "已复制" : "复制 Markdown"}</span>
-          </button>
-          <button
-            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
-            onClick={pasteAnnotations}
-          >
-            <FileInput size={16} />
-            <span>{importedCount ? `导入 ${importedCount}` : "导入"}</span>
-          </button>
-          <button
-            className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-[background-color,color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:text-white/25 ${
-              confirmClearPage ? "bg-red-50 text-red-700 hover:bg-red-100" : "bg-white text-red-500 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] hover:bg-red-50 hover:text-red-700"
-            }`}
-            disabled={!pageAnnotations.length}
-            aria-label={confirmClearPage ? `确认清空 ${pageAnnotations.length} 条` : "清空当前页面"}
-            title={confirmClearPage ? `确认清空 ${pageAnnotations.length} 条` : "清空当前页面"}
-            onClick={() => void clearPage()}
-          >
-            <Trash2 size={17} />
-          </button>
           {confirmClearPage ? (
-            <button
-              className="h-9 shrink-0 rounded-xl px-2.5 text-xs font-bold text-ink-500 transition-[background-color,color,transform] duration-150 hover:bg-ink-100 hover:text-ink-900 active:scale-[0.96]"
-              onClick={() => setConfirmClearPage(false)}
-            >
-              取消
-            </button>
-          ) : null}
+            <>
+              <p className="min-w-0 flex-1 truncate px-1 text-xs font-bold text-red-700">
+                清空当前页面 {pageAnnotations.length} 条标注？
+              </p>
+              <button
+                className="h-9 shrink-0 rounded-xl px-2.5 text-xs font-bold text-ink-500 transition-[background-color,color,transform] duration-150 hover:bg-ink-100 hover:text-ink-900 active:scale-[0.96]"
+                onClick={() => setConfirmClearPage(false)}
+              >
+                取消
+              </button>
+              <button
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-red-600 px-2.5 text-xs font-bold text-white shadow-[0_8px_18px_rgba(220,38,38,0.22)] transition-[background-color,transform] duration-150 hover:bg-red-700 active:scale-[0.96]"
+                onClick={() => void clearPage()}
+              >
+                <Trash2 size={15} />
+                确认清空
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:text-ink-300"
+                disabled={!pageAnnotations.length}
+                onClick={() => void copy()}
+              >
+                {copied ? <CheckCircle2 size={16} /> : <Clipboard size={16} />}
+                <span className="truncate">{copied ? "已复制" : "复制 Markdown"}</span>
+              </button>
+              <button
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+                onClick={pasteAnnotations}
+              >
+                <FileInput size={16} />
+                <span>{importedCount ? `导入 ${importedCount}` : "导入"}</span>
+              </button>
+              <button
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-red-500 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,color,transform] duration-150 hover:bg-red-50 hover:text-red-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-white disabled:text-ink-300 disabled:shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
+                disabled={!pageAnnotations.length}
+                aria-label="清空当前页面"
+                title="清空当前页面"
+                onClick={() => void clearPage()}
+              >
+                <Trash2 size={17} />
+              </button>
+            </>
+          )}
         </div>
       </footer>
     </main>
@@ -721,8 +761,7 @@ function AnnotationCard({
       <CardActionMenu
         open={menuOpen}
         onOpenChange={setMenuOpen}
-        onFocus={onFocus}
-        onCopySelector={() => void navigator.clipboard?.writeText(annotation.selector)}
+        onCopySelector={() => void writeClipboardText(annotation.selector)}
         onEdit={onEdit}
         onDelete={onDelete}
       />
@@ -733,14 +772,12 @@ function AnnotationCard({
 function CardActionMenu({
   open,
   onOpenChange,
-  onFocus,
   onCopySelector,
   onEdit,
   onDelete
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onFocus: () => void;
   onCopySelector: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -802,9 +839,6 @@ function CardActionMenu({
           } as React.CSSProperties
         }
       >
-        <button className="flex h-10 w-full items-center rounded-lg px-3 text-left text-ink-800 transition-colors duration-150 hover:bg-ink-50" type="button" onClick={() => run(onFocus)}>
-          定位元素
-        </button>
         <button className="flex h-10 w-full items-center rounded-lg px-3 text-left text-ink-800 transition-colors duration-150 hover:bg-ink-50" type="button" onClick={() => run(onCopySelector)}>
           复制 selector
         </button>
@@ -822,7 +856,7 @@ function CardActionMenu({
 function ShortcutBadge({ active, children }: { active?: boolean; children: React.ReactNode }) {
   return (
     <span
-      className={`inline-flex h-6 min-w-6 items-center justify-center rounded-lg px-2 text-[11px] font-extrabold tabular-nums shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] ${
+      className={`inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 text-[10px] font-extrabold tabular-nums shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] ${
         active ? "bg-white/12 text-white/75" : "bg-ink-100 text-ink-500"
       }`}
     >
@@ -870,7 +904,7 @@ function PageDropdown({
   }, [isOpen]);
 
   return (
-    <div className="mt-2">
+    <div>
       <button
         ref={triggerRef}
         type="button"
@@ -878,6 +912,7 @@ function PageDropdown({
         style={{ anchorName } as React.CSSProperties}
         onClick={() => setIsOpen((open) => !open)}
       >
+        {selected ? <SiteIcon url={selected.url} className="h-6 w-6" /> : null}
         <span className="min-w-0 flex-1 truncate text-xs font-extrabold text-ink-900">
           {selected?.url === currentUrl ? "当前页 · " : ""}{selected?.title ?? "选择页面"} ({selected?.count ?? 0})
         </span>
@@ -906,7 +941,7 @@ function PageDropdown({
             <button
               key={item.url}
               type="button"
-              className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors duration-150 ${
+              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors duration-150 ${
                 isSelected ? "bg-brand-50 text-brand-700" : "text-ink-800 hover:bg-ink-50"
               }`}
               onClick={() => {
@@ -914,9 +949,7 @@ function PageDropdown({
                 setIsOpen(false);
               }}
             >
-              <span className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${isSelected ? "text-brand-600" : "text-transparent"}`}>
-                <Check size={14} strokeWidth={2.7} />
-              </span>
+              <SiteIcon url={item.url} selected={isSelected} className="h-7 w-7" />
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="truncate text-xs font-extrabold">{item.title}</span>
@@ -933,6 +966,129 @@ function PageDropdown({
       </div>
     </div>
   );
+}
+
+const faviconCandidatesCache = new Map<string, Promise<string[]>>();
+
+function SiteIcon({ url, selected = false, className = "h-6 w-6" }: { url: string; selected?: boolean; className?: string }) {
+  const [candidates, setCandidates] = useState<string[]>(() => getFallbackFaviconCandidates(url));
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const faviconUrl = candidates[candidateIndex] ?? "";
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCandidates(getFallbackFaviconCandidates(url));
+    setCandidateIndex(0);
+    setFailed(false);
+
+    void getFaviconCandidates(url).then((items) => {
+      if (cancelled) return;
+      setCandidates(items);
+      setCandidateIndex(0);
+      setFailed(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  const useNextCandidate = () => {
+    setCandidateIndex((index) => {
+      const nextIndex = index + 1;
+      if (nextIndex >= candidates.length) {
+        setFailed(true);
+        return index;
+      }
+      return nextIndex;
+    });
+  };
+
+  const shellClass = `${className} grid shrink-0 place-items-center overflow-hidden rounded-lg ${
+    selected
+      ? "bg-white/90 text-brand-700 shadow-[inset_0_0_0_1px_rgba(15,159,120,0.14)]"
+      : "bg-ink-100 text-ink-400 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
+  }`;
+
+  if (!faviconUrl || failed) {
+    return (
+      <span className={shellClass} aria-hidden="true">
+        <Globe2 size={15} strokeWidth={2.3} />
+      </span>
+    );
+  }
+
+  return (
+    <span className={shellClass} aria-hidden="true">
+      <img
+        src={faviconUrl}
+        alt=""
+        className="h-full w-full object-cover"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={useNextCandidate}
+      />
+    </span>
+  );
+}
+
+async function getFaviconCandidates(pageUrl: string): Promise<string[]> {
+  const origin = getUrlOrigin(pageUrl);
+  if (!origin) return [];
+
+  const cached = faviconCandidatesCache.get(origin);
+  if (cached) return cached;
+
+  const request = discoverFaviconCandidates(pageUrl);
+  faviconCandidatesCache.set(origin, request);
+  return request;
+}
+
+async function discoverFaviconCandidates(pageUrl: string): Promise<string[]> {
+  const fallback = getFallbackFaviconCandidates(pageUrl);
+
+  try {
+    const response = await fetch(pageUrl, { credentials: "omit" });
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const discovered = Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'))
+      .map((link) => link.getAttribute("href"))
+      .filter((href): href is string => Boolean(href))
+      .map((href) => resolveUrl(href, pageUrl))
+      .filter((href): href is string => Boolean(href));
+
+    return uniqueStrings([...discovered, ...fallback]);
+  } catch {
+    return fallback;
+  }
+}
+
+function getFallbackFaviconCandidates(pageUrl: string): string[] {
+  const origin = getUrlOrigin(pageUrl);
+  if (!origin) return [];
+  return [`${origin}/favicon.ico`, `${origin}/icon.png`, `${origin}/apple-touch-icon.png`];
+}
+
+function getUrlOrigin(pageUrl: string): string {
+  try {
+    const { origin } = new URL(pageUrl);
+    return origin;
+  } catch {
+    return "";
+  }
+}
+
+function resolveUrl(url: string, baseUrl: string): string {
+  try {
+    return new URL(url, baseUrl).href;
+  } catch {
+    return "";
+  }
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return Array.from(new Set(items));
 }
 
 function StatusDropdown({ value, onChange, dark = false }: { value: AnnotationStatus; onChange: (status: AnnotationStatus) => void; dark?: boolean }) {
@@ -1048,6 +1204,7 @@ function SeverityPill({ severity, compact = false }: { severity: DomAnnotation["
 function Badge({ children, tone }: { children: React.ReactNode; tone: Tone }) {
   const styles = {
     brand: "bg-brand-50 text-brand-700",
+    info: "bg-blue-50 text-blue-700",
     note: "bg-note-50 text-note-700",
     neutral: "bg-ink-100 text-ink-700",
     danger: "bg-red-50 text-red-700",
@@ -1116,6 +1273,7 @@ function getBatchStatusButtonClass(status: AnnotationStatus) {
   const tone = getStatusTone(status);
   const styles: Record<Tone, string> = {
     brand: "bg-brand-50 text-brand-700 hover:bg-brand-100",
+    info: "bg-blue-50 text-blue-700 hover:bg-blue-100",
     note: "bg-note-50 text-note-700 hover:bg-note-100",
     neutral: "bg-ink-100 text-ink-700 hover:bg-ink-200",
     danger: "bg-red-50 text-red-700 hover:bg-red-100",
@@ -1126,7 +1284,7 @@ function getBatchStatusButtonClass(status: AnnotationStatus) {
 
 function EmptyState({ onPick }: { onPick: () => void }) {
   return (
-    <div className="rounded-2xl bg-white px-4 py-8 text-center shadow-[0_8px_24px_rgba(17,24,39,0.05),inset_0_0_0_1px_rgba(17,24,39,0.06)]">
+    <div className="w-full text-center">
       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-ink-950 text-white">
         <ListChecks size={22} />
       </div>
@@ -1135,10 +1293,10 @@ function EmptyState({ onPick }: { onPick: () => void }) {
         选择一个页面元素，写下问题或建议，然后导出给 AI 使用的修改说明。
       </p>
       <button
-        className="mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#0b1120] px-4 text-sm font-bold text-white shadow-[0_10px_22px_rgba(17,24,39,0.18)] transition-[background-color,transform] duration-150 hover:bg-[#1f2937] active:scale-[0.96]"
+        className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0b1120] px-3.5 text-[13px] font-bold text-white shadow-[0_8px_18px_rgba(17,24,39,0.16)] transition-[background-color,transform] duration-150 hover:bg-[#1f2937] active:scale-[0.96]"
         onClick={onPick}
       >
-        <Crosshair size={17} />
+        <Crosshair size={16} />
         选择元素
       </button>
     </div>
@@ -1147,7 +1305,7 @@ function EmptyState({ onPick }: { onPick: () => void }) {
 
 function ExcludedState({ reason }: { reason: string }) {
   return (
-    <div className="rounded-2xl bg-white px-4 py-8 text-center shadow-[0_8px_24px_rgba(17,24,39,0.05),inset_0_0_0_1px_rgba(17,24,39,0.06)]">
+    <div className="w-full text-center">
       <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-ink-100 text-ink-500">
         <X size={22} />
       </div>
@@ -1159,16 +1317,65 @@ function ExcludedState({ reason }: { reason: string }) {
   );
 }
 
+const CONTENT_SCRIPT_RETRY_DELAYS = [20, 60, 120, 240, 360];
+
 async function sendContentMessage(tabId: number, message: unknown) {
+  await ensureContentScript(tabId);
+  await sendTabMessageWithRetry(tabId, message);
+}
+
+async function ensureContentScript(tabId: number) {
   try {
-    await chrome.tabs.sendMessage(tabId, message);
-  } catch (error) {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content-loader.js"]
-    });
-    await chrome.tabs.sendMessage(tabId, message);
+    await chrome.tabs.sendMessage(tabId, { type: "DOM_AI_REFRESH_PINS" });
+    return;
+  } catch {
+    // The content script is not mounted yet.
   }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content-loader.js"]
+  });
+  await sendTabMessageWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
+}
+
+async function sendTabMessageWithRetry(tabId: number, message: unknown) {
+  let lastError: unknown;
+  for (const delayMs of CONTENT_SCRIPT_RETRY_DELAYS) {
+    await delay(delayMs);
+    try {
+      await chrome.tabs.sendMessage(tabId, message);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isEditableEvent(event: KeyboardEvent): boolean {
+  const path = event.composedPath();
+  return path.some((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const tagName = node.tagName.toLowerCase();
+    return node.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
+  });
+}
+
+function getContentScriptErrorMessage(error: unknown, actionLabel: string) {
+  const message = error instanceof Error ? error.message : "";
+  if (/^(chrome|chrome-extension|chrome-search|chrome-untrusted|edge|about|devtools|view-source|file:\/\/\/$)/i.test(message)) {
+    return `当前页面不支持${actionLabel}。请避开 chrome://、扩展页面、浏览器内置页面或特殊文档。`;
+  }
+  return `当前页面暂时不能${actionLabel}。请确认页面已加载完成，或刷新后再试。`;
+}
+
+function isContentScriptErrorText(value: string): boolean {
+  return value.startsWith("当前页面不支持") || value.startsWith("当前页面暂时不能");
 }
 
 function isInspectableUrl(url: string) {

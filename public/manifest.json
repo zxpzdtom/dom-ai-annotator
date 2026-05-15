@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "DOM AI 标注器",
-  "description": "点击网页 DOM 元素收集设计反馈，并导出给 AI 或开发使用的结构化修改说明。",
+  "name": "DOM Review",
+  "description": "在网页元素上记录 UI 反馈，并导出给 AI 或开发处理。",
   "version": "0.1.0",
-  "permissions": ["activeTab", "storage", "sidePanel", "tabs", "scripting", "clipboardWrite"],
+  "permissions": ["activeTab", "storage", "sidePanel", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
   "icons": {
     "16": "icons/icon-16.png",
@@ -12,7 +12,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "DOM AI 标注器",
+    "default_title": "DOM Review",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -30,7 +30,7 @@
         "default": "Alt+Shift+C",
         "mac": "Alt+Shift+C"
       },
-      "description": "打开或关闭 DOM AI 标注器"
+      "description": "打开或关闭 DOM Review"
     },
     "start-picking": {
       "description": "选择页面元素"
@@ -39,13 +39,6 @@
   "side_panel": {
     "default_path": "src/sidepanel/index.html"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content-loader.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": ["content.js", "chunks/*.js"],

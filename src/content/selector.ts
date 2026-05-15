@@ -26,6 +26,19 @@ const STYLE_PROPS = [
   "gridTemplateColumns"
 ];
 
+const STABLE_SELECTOR_ATTRIBUTES = [
+  "data-testid",
+  "data-test",
+  "data-cy",
+  "data-qa",
+  "data-test-id",
+  "aria-label",
+  "name",
+  "placeholder",
+  "title",
+  "alt"
+];
+
 export function createAnnotationDraft(element: Element, pin?: AnnotationDraft["pin"]): AnnotationDraft {
   const rect = element.getBoundingClientRect();
   const htmlElement = element as HTMLElement;
@@ -68,25 +81,21 @@ export function getCssSelector(element: Element): string {
     return `#${cssEscape(element.id)}`;
   }
 
+  for (const selector of getStableSelectorCandidates(element)) {
+    if (isUniqueSelector(selector)) return selector;
+  }
+
   const parts: string[] = [];
   let current: Element | null = element;
 
   while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
-    let selector = current.nodeName.toLowerCase();
+    let selector = getElementSelectorSegment(current);
     const currentElement = current as HTMLElement;
 
     if (currentElement.id) {
       selector += `#${cssEscape(currentElement.id)}`;
       parts.unshift(selector);
       break;
-    }
-
-    const classes = Array.from(currentElement.classList)
-      .filter((className) => !className.startsWith("dom-ai-"))
-      .slice(0, 3);
-
-    if (classes.length) {
-      selector += `.${classes.map(cssEscape).join(".")}`;
     }
 
     const parent: Element | null = current.parentElement;
@@ -108,6 +117,44 @@ export function getCssSelector(element: Element): string {
   }
 
   return parts.length ? `body > ${parts.join(" > ")}` : "body";
+}
+
+function getElementSelectorSegment(element: Element): string {
+  const tag = element.nodeName.toLowerCase();
+  const stableAttributeSelector = getStableAttributeSelector(element);
+  if (stableAttributeSelector) return `${tag}${stableAttributeSelector}`;
+
+  const currentElement = element as HTMLElement;
+  const classes = Array.from(currentElement.classList)
+    .filter((className) => !className.startsWith("dom-ai-") && !looksGeneratedClassName(className))
+    .slice(0, 3);
+
+  return classes.length ? `${tag}.${classes.map(cssEscape).join(".")}` : tag;
+}
+
+function getStableSelectorCandidates(element: Element): string[] {
+  const tag = element.nodeName.toLowerCase();
+  const candidates: string[] = [];
+
+  const stableAttributeSelector = getStableAttributeSelector(element);
+  if (stableAttributeSelector) {
+    candidates.push(stableAttributeSelector, `${tag}${stableAttributeSelector}`);
+  }
+
+  const role = cleanAttributeValue(element.getAttribute("role"));
+  if (role) {
+    candidates.push(`[role="${cssStringEscape(role)}"]`, `${tag}[role="${cssStringEscape(role)}"]`);
+  }
+
+  return candidates;
+}
+
+function getStableAttributeSelector(element: Element): string {
+  for (const attr of STABLE_SELECTOR_ATTRIBUTES) {
+    const value = cleanAttributeValue(element.getAttribute(attr));
+    if (value) return `[${attr}="${cssStringEscape(value)}"]`;
+  }
+  return "";
 }
 
 function getXPath(element: Element): string {
@@ -154,6 +201,23 @@ function normalizeText(text: string): string | undefined {
 
 function cssEscape(value: string): string {
   return window.CSS?.escape ? window.CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function cssStringEscape(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\a ");
+}
+
+function cleanAttributeValue(value: string | null): string {
+  const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
+  return normalized && normalized.length <= 120 ? normalized : "";
+}
+
+function looksGeneratedClassName(className: string): boolean {
+  return (
+    className.length > 32 ||
+    /(^|[-_])[a-f0-9]{6,}($|[-_])/i.test(className) ||
+    /^[a-z]+-[a-z0-9_-]*__[a-z0-9_-]+$/i.test(className)
+  );
 }
 
 function toKebab(value: string): string {

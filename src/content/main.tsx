@@ -4,9 +4,10 @@ import { MessageCircle, Ruler, Trash2, Type, X } from "lucide-react";
 import cssText from "./content.css?inline";
 import { createAnnotationDraft, getCssSelector } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity } from "../shared/types";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
+import { writeClipboardText } from "../shared/clipboard";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 430;
@@ -14,15 +15,23 @@ const COMPOSER_ESTIMATED_HEIGHT = 560;
 const COMPOSER_MIN_VISIBLE_HEIGHT = 360;
 const EDGE_GAP = 16;
 const PIN_COLLAPSED_WIDTH = 44;
+const PIN_COLLAPSED_HEIGHT = 38;
 const PIN_EXPANDED_WIDTH = 380;
+const PIN_CARD_ESTIMATED_HEIGHT = 318;
 const PIN_GAP = 8;
 const SMALL_TARGET_MIN_WIDTH = 96;
 const SMALL_TARGET_MIN_HEIGHT = 44;
+const HOVER_LABEL_GAP = 8;
+const HOVER_LABEL_HEIGHT = 34;
+const HOVER_LABEL_MAX_WIDTH = 320;
+const HOVER_LABEL_VIEWPORT_GAP = 8;
 const MEASURE_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#ea580c", "#0891b2", "#16a34a"];
 const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-    <path d="M9 25.25v-5.4A8.2 8.2 0 0 1 6 13.5C6 8.8 9.8 5 14.5 5h5C24.2 5 28 8.8 28 13.5S24.2 22 19.5 22h-6.7L9 25.25Z" fill="white" stroke="black" stroke-width="3.2" stroke-linejoin="round"/>
-    <path d="M9 25.25v-5.4A8.2 8.2 0 0 1 6 13.5C6 8.8 9.8 5 14.5 5h5C24.2 5 28 8.8 28 13.5S24.2 22 19.5 22h-6.7L9 25.25Z" fill="white" stroke="white" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M8.2 25.8v-5.2A8.7 8.7 0 0 1 5.5 14.2C5.5 9 9.7 5 15.1 5h4.7c5.4 0 9.7 4 9.7 9.2s-4.3 9.2-9.7 9.2h-6.4l-5.2 2.4Z" fill="white" stroke="black" stroke-width="3.2" stroke-linejoin="round"/>
+    <path d="M8.2 25.8v-5.2A8.7 8.7 0 0 1 5.5 14.2C5.5 9 9.7 5 15.1 5h4.7c5.4 0 9.7 4 9.7 9.2s-4.3 9.2-9.7 9.2h-6.4l-5.2 2.4Z" fill="white" stroke="white" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M13.3 14.2h.01M17.5 14.2h.01M21.7 14.2h.01" stroke="#0f9f78" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M8.2 25.8v-5.2" stroke="#0f9f78" stroke-width="1.4" stroke-linecap="round"/>
   </svg>`
 )}") 9 9, crosshair`;
 
@@ -278,12 +287,13 @@ function App() {
       event.preventDefault();
       event.stopPropagation();
       setResumePickingAfterComposer(true);
+      const inspection = getElementInspection(element);
       setComposer({
-        draft: createAnnotationDraft(element, {
+        draft: createAnnotationDraft(element, getPreferredAnnotationPinAnchor(inspection, {
           x: event.clientX + window.scrollX,
           y: event.clientY + window.scrollY
-        }),
-        inspection: getElementInspection(element)
+        })),
+        inspection
       });
       setPicking(false);
     };
@@ -469,19 +479,11 @@ function App() {
           <>
             <div
               className="dom-ai-highlight"
-              style={{
-                left: hoverInspection.documentRect.x,
-                top: hoverInspection.documentRect.y,
-                width: hoverInspection.documentRect.width,
-                height: hoverInspection.documentRect.height
-              }}
+              style={getHighlightStyle(hoverInspection)}
             />
             <div
               className="dom-ai-hover-label"
-              style={{
-                left: hoverInspection.documentRect.x,
-                top: Math.max(8, hoverInspection.documentRect.y - 34)
-              }}
+              style={getHoverLabelStyle(hoverInspection, hoverInspection.label, `${Math.round(hoverInspection.documentRect.width)} x ${Math.round(hoverInspection.documentRect.height)}`)}
             >
               <span>{hoverInspection.label}</span>
               <b>{Math.round(hoverInspection.documentRect.width)} x {Math.round(hoverInspection.documentRect.height)}</b>
@@ -579,6 +581,7 @@ function AnnotationPin({
   const style = {
     left: position.left,
     top: position.top,
+    "--dom-ai-pin-card-top": `${position.cardTop}px`,
     "--dom-ai-pin-bg": palette.bg,
     "--dom-ai-pin-hover-bg": palette.hover,
     "--dom-ai-pin-badge-bg": palette.badge
@@ -586,7 +589,7 @@ function AnnotationPin({
 
   return (
     <div
-      className={`dom-ai-pin dom-ai-pin-${position.side} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""}`}
+      className={`dom-ai-pin dom-ai-pin-placement-${position.placement} dom-ai-pin-card-side-${position.cardSide} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""}`}
       style={style}
       onMouseEnter={() => {
         setIsDismissed(false);
@@ -773,40 +776,142 @@ function ReviewCursorIcon() {
   );
 }
 
-function getAnnotationPinPosition(annotation: DomAnnotation): { left: number; top: number; side: "right" | "left" } {
+type AnnotationPinPosition = {
+  left: number;
+  top: number;
+  placement: PinPlacement;
+  cardSide: "right" | "left";
+  cardTop: number;
+};
+
+type PinPlacement = "right" | "left" | "bottom" | "top";
+
+type PinCandidate = {
+  anchor: AnnotationPinAnchor;
+  placement: PinPlacement;
+};
+
+function getAnnotationPinPosition(annotation: DomAnnotation): AnnotationPinPosition {
   const rect = getAnnotationDocumentRect(annotation);
-  const shouldAvoidTarget = rect.width < SMALL_TARGET_MIN_WIDTH || rect.height < SMALL_TARGET_MIN_HEIGHT;
-  const anchor = shouldAvoidTarget ? {
-    x: rect.x + rect.width + PIN_GAP,
-    y: rect.y + rect.height / 2
-  } : annotation.pin ?? {
-    x: rect.x + rect.width + PIN_GAP,
-    y: rect.y + rect.height / 2
-  };
+  const candidate = getPreferredAnnotationPinCandidateFromRect(rect, annotation.pin);
+  const { anchor } = candidate;
   const viewportLeft = window.scrollX;
   const viewportRight = window.scrollX + window.innerWidth;
+  const viewportTop = window.scrollY + EDGE_GAP;
+  const viewportBottom = window.scrollY + window.innerHeight - EDGE_GAP;
   const canExpandRight = anchor.x + PIN_EXPANDED_WIDTH <= viewportRight - EDGE_GAP;
   const canExpandLeft = anchor.x - PIN_EXPANDED_WIDTH >= viewportLeft + EDGE_GAP;
-
-  if (!canExpandRight && canExpandLeft) {
-    return {
-      left: Math.min(viewportRight - EDGE_GAP, anchor.x),
-      top: anchor.y,
-      side: "left"
-    };
-  }
+  const markerRect = getPinMarkerRect(anchor, candidate.placement);
+  const cardTop = getPinCardTopOffset(markerRect.y, viewportTop, viewportBottom);
+  const cardSide = !canExpandRight && canExpandLeft ? "left" : "right";
 
   return {
-    left: Math.min(Math.max(viewportLeft + EDGE_GAP, anchor.x), viewportRight - PIN_COLLAPSED_WIDTH - EDGE_GAP),
+    left: anchor.x,
     top: anchor.y,
-    side: "right"
+    placement: candidate.placement,
+    cardSide,
+    cardTop
   };
+}
+
+function getPreferredAnnotationPinAnchor(inspection: HoverInspection, clickPoint: AnnotationPinAnchor): AnnotationPinAnchor {
+  return getPreferredAnnotationPinCandidateFromRect(inspection.documentRect, clickPoint).anchor;
+}
+
+function getPreferredAnnotationPinCandidateFromRect(rect: HoverInspection["documentRect"], preferredPoint?: AnnotationPinAnchor): PinCandidate {
+  const shouldAvoidTarget = rect.width < SMALL_TARGET_MIN_WIDTH || rect.height < SMALL_TARGET_MIN_HEIGHT;
+  const preferredCandidate = preferredPoint ? inferPinCandidateFromPoint(rect, preferredPoint) : null;
+  const markerOverlapsTarget = preferredCandidate ? markerRectOverlapsTarget(getPinMarkerRect(preferredCandidate.anchor, preferredCandidate.placement), rect) : false;
+  if (preferredCandidate && !shouldAvoidTarget && !markerOverlapsTarget) return preferredCandidate;
+
+  const viewportLeft = window.scrollX + EDGE_GAP;
+  const viewportRight = window.scrollX + window.innerWidth - EDGE_GAP;
+  const viewportTop = window.scrollY + EDGE_GAP;
+  const viewportBottom = window.scrollY + window.innerHeight - EDGE_GAP;
+  const candidates: PinCandidate[] = [
+    {
+      anchor: { x: rect.x + rect.width + PIN_GAP, y: rect.y + rect.height / 2 },
+      placement: "right"
+    },
+    {
+      anchor: { x: rect.x - PIN_GAP, y: rect.y + rect.height / 2 },
+      placement: "left"
+    },
+    {
+      anchor: { x: rect.x + rect.width / 2, y: rect.y + rect.height + PIN_GAP },
+      placement: "bottom"
+    },
+    {
+      anchor: { x: rect.x + rect.width / 2, y: rect.y - PIN_GAP },
+      placement: "top"
+    }
+  ];
+
+  const visibleCandidate = candidates.find(({ anchor, placement }) => {
+    const marker = getPinMarkerRect(anchor, placement);
+    return (
+      marker.x >= viewportLeft &&
+      marker.x + marker.width <= viewportRight &&
+      marker.y >= viewportTop &&
+      marker.y + marker.height <= viewportBottom &&
+      !markerRectOverlapsTarget(marker, rect)
+    );
+  });
+
+  if (visibleCandidate) return visibleCandidate;
+
+  return {
+    anchor: {
+      x: rect.x + rect.width + PIN_GAP,
+      y: rect.y + rect.height / 2
+    },
+    placement: "right"
+  };
+}
+
+function inferPinCandidateFromPoint(rect: HoverInspection["documentRect"], point: AnnotationPinAnchor): PinCandidate {
+  const distances = [
+    { placement: "right" as const, value: Math.abs(point.x - (rect.x + rect.width)) },
+    { placement: "left" as const, value: Math.abs(point.x - rect.x) },
+    { placement: "bottom" as const, value: Math.abs(point.y - (rect.y + rect.height)) },
+    { placement: "top" as const, value: Math.abs(point.y - rect.y) }
+  ].sort((a, b) => a.value - b.value);
+  return { anchor: point, placement: distances[0].placement };
+}
+
+function getPinCardTopOffset(markerTop: number, viewportTop: number, viewportBottom: number): number {
+  const preferredCardTop = markerTop - PIN_CARD_ESTIMATED_HEIGHT / 2;
+  const clampedCardTop = clamp(preferredCardTop, viewportTop, Math.max(viewportTop, viewportBottom - PIN_CARD_ESTIMATED_HEIGHT));
+  return clampedCardTop - markerTop;
+}
+
+function getPinMarkerRect(anchor: AnnotationPinAnchor, placement: PinPlacement): HoverInspection["documentRect"] {
+  if (placement === "left") {
+    return { x: anchor.x - PIN_COLLAPSED_WIDTH, y: anchor.y - PIN_COLLAPSED_HEIGHT / 2, width: PIN_COLLAPSED_WIDTH, height: PIN_COLLAPSED_HEIGHT };
+  }
+  if (placement === "bottom") {
+    return { x: anchor.x - PIN_COLLAPSED_WIDTH / 2, y: anchor.y, width: PIN_COLLAPSED_WIDTH, height: PIN_COLLAPSED_HEIGHT };
+  }
+  if (placement === "top") {
+    return { x: anchor.x - PIN_COLLAPSED_WIDTH / 2, y: anchor.y - PIN_COLLAPSED_HEIGHT, width: PIN_COLLAPSED_WIDTH, height: PIN_COLLAPSED_HEIGHT };
+  }
+  return { x: anchor.x, y: anchor.y - PIN_COLLAPSED_HEIGHT / 2, width: PIN_COLLAPSED_WIDTH, height: PIN_COLLAPSED_HEIGHT };
+}
+
+function markerRectOverlapsTarget(marker: HoverInspection["documentRect"], target: HoverInspection["documentRect"]): boolean {
+  return !(
+    marker.x >= target.x + target.width ||
+    marker.x + marker.width <= target.x ||
+    marker.y >= target.y + target.height ||
+    marker.y + marker.height <= target.y
+  );
 }
 
 function FocusedAnnotationOverlay({ annotation, subtle = false }: { annotation?: DomAnnotation; subtle?: boolean }) {
   if (!annotation) return null;
   const palette = getPinPalette(annotation.status);
   const rect = getAnnotationDocumentRect(annotation);
+  const borderRadius = getAnnotationBorderRadius(annotation);
   return (
     <div
       className={`dom-ai-focused-annotation ${subtle ? "dom-ai-focused-annotation-subtle" : ""}`}
@@ -815,6 +920,7 @@ function FocusedAnnotationOverlay({ annotation, subtle = false }: { annotation?:
         top: rect.y,
         width: rect.width,
         height: rect.height,
+        borderRadius,
         "--dom-ai-focus-color": palette.bg,
         "--dom-ai-focus-glow": palette.ring
       } as React.CSSProperties}
@@ -887,6 +993,7 @@ function Composer({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -894,7 +1001,7 @@ function Composer({
         return;
       }
 
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      if (isSaveKeyboardShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
         void save();
@@ -948,35 +1055,42 @@ function Composer({
         className="mt-1 min-h-[118px] w-full resize-none rounded-xl bg-white px-3 py-2.5 text-sm leading-5 text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] outline-none transition-shadow duration-150 placeholder:text-ink-500 focus:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.45)]"
         value={comment}
         onChange={(event) => setComment(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (!isSaveKeyboardShortcut(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void save();
+        }}
         placeholder="例如：移动端 CTA 按钮距离标题太近。"
         autoFocus
       />
 
-      <div className="mt-3">
+      <div className="mt-2.5">
         <PriorityControl value={severity} onChange={setSeverity} />
       </div>
 
-      <div className="mt-4 flex items-center justify-between gap-2">
+      <div className="mt-3 flex items-center justify-between gap-2">
         {state.editingAnnotation ? (
           <button
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
+            className={`inline-flex h-[34px] items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
               confirmDelete ? "bg-red-50 text-red-700 shadow-[inset_0_0_0_1px_rgba(185,28,28,0.18)] hover:bg-red-100" : "bg-white text-ink-500 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] hover:bg-ink-50 hover:text-red-700"
             }`}
             onClick={() => void remove()}
           >
-            <Trash2 size={15} />
+            <Trash2 size={14} />
             {confirmDelete ? "确认删除" : "删除"}
           </button>
         ) : <span />}
         <div className="flex justify-end gap-2">
           <button
-            className="inline-flex h-10 items-center justify-center rounded-lg bg-white px-3 text-sm font-semibold text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+            className="inline-flex h-[34px] items-center justify-center rounded-lg bg-white px-2.5 text-xs font-semibold text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
             onClick={onCancel}
           >
             取消
           </button>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-brand-600 px-3 text-sm font-semibold text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
+            className="inline-flex h-[34px] items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-2.5 text-xs font-semibold text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
             disabled={!canSave}
             onClick={() => void save()}
             title="Cmd/Ctrl + Enter"
@@ -1020,31 +1134,18 @@ function MeasureLayer({
       {liveAnchor ? (
         <div
           className="dom-ai-highlight dom-ai-measure-anchor"
-          style={{
-            left: liveAnchor.documentRect.x,
-            top: liveAnchor.documentRect.y,
-            width: liveAnchor.documentRect.width,
-            height: liveAnchor.documentRect.height
-          }}
+          style={getHighlightStyle(liveAnchor)}
         />
       ) : null}
       {liveHover ? (
         <>
           <div
             className="dom-ai-highlight"
-            style={{
-              left: liveHover.documentRect.x,
-              top: liveHover.documentRect.y,
-              width: liveHover.documentRect.width,
-              height: liveHover.documentRect.height
-            }}
+            style={getHighlightStyle(liveHover)}
           />
           <div
             className="dom-ai-hover-label"
-            style={{
-              left: liveHover.documentRect.x,
-              top: Math.max(window.scrollY + 8, liveHover.documentRect.y - 34)
-            }}
+            style={getHoverLabelStyle(liveHover, liveAnchor ? "测量目标" : "测量起点", liveHover.label)}
           >
             <span>{liveAnchor ? "测量目标" : "测量起点"}</span>
             <b>{liveHover.label}</b>
@@ -1079,21 +1180,11 @@ function MeasurementPair({ pair }: { pair: PinnedMeasurement }) {
     >
       <div
         className="dom-ai-highlight dom-ai-measure-pinned-box"
-        style={{
-          left: from.documentRect.x,
-          top: from.documentRect.y,
-          width: from.documentRect.width,
-          height: from.documentRect.height
-        }}
+        style={getHighlightStyle(from)}
       />
       <div
         className="dom-ai-highlight dom-ai-measure-pinned-box"
-        style={{
-          left: to.documentRect.x,
-          top: to.documentRect.y,
-          width: to.documentRect.width,
-          height: to.documentRect.height
-        }}
+        style={getHighlightStyle(to)}
       />
       {measurements.length ? <MeasurementOverlay measurements={measurements} idPrefix={pair.key} /> : (
         <div
@@ -1123,9 +1214,13 @@ function ElementDetails({
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const copyMetric = useCallback(async (label: string, value: string) => {
-    await navigator.clipboard.writeText(`${label}: ${value || "-"}`);
-    setCopiedKey(label);
-    window.setTimeout(() => setCopiedKey(null), 900);
+    try {
+      await writeClipboardText(`${label}: ${value || "-"}`);
+      setCopiedKey(label);
+      window.setTimeout(() => setCopiedKey(null), 900);
+    } catch {
+      setCopiedKey(null);
+    }
   }, []);
 
   return (
@@ -1262,12 +1357,12 @@ function PriorityControl({
 
   return (
     <div>
-      <div className="text-xs font-bold text-ink-700">优先级</div>
-      <div className="mt-1 grid grid-cols-3 gap-1 rounded-xl bg-ink-100 p-1">
+      <div className="text-[11px] font-bold text-ink-700">优先级</div>
+      <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-1">
         {options.map((option) => (
           <button
             key={option}
-            className={`h-9 rounded-lg text-xs font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
+            className={`h-[30px] rounded-md text-[11px] font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
               value === option
                 ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.12)]"
                 : "text-ink-500 hover:bg-white/60 hover:text-ink-800"
@@ -1316,6 +1411,10 @@ function getElementLabel(element: Element): string {
   return `${element.tagName.toLowerCase()}${id}${className}`;
 }
 
+function isSaveKeyboardShortcut(event: KeyboardEvent | React.KeyboardEvent): boolean {
+  return (event.key === "Enter" || event.code === "Enter" || event.code === "NumpadEnter") && (event.metaKey || event.ctrlKey);
+}
+
 function getElementInspection(element: Element): HoverInspection {
   const rect = element.getBoundingClientRect();
   const styles = window.getComputedStyle(element);
@@ -1352,6 +1451,80 @@ function getElementInspection(element: Element): HoverInspection {
 function getLiveInspection(inspection: HoverInspection): HoverInspection {
   if (!inspection.element?.isConnected || isInjectedElement(inspection.element)) return inspection;
   return getElementInspection(inspection.element);
+}
+
+function getHighlightStyle(inspection: HoverInspection): React.CSSProperties {
+  return {
+    left: inspection.documentRect.x,
+    top: inspection.documentRect.y,
+    width: inspection.documentRect.width,
+    height: inspection.documentRect.height,
+    borderRadius: normalizeBorderRadius(inspection.borderRadius)
+  };
+}
+
+function getHoverLabelStyle(inspection: HoverInspection, label: string, badge: string): React.CSSProperties {
+  const rect = inspection.documentRect;
+  const labelWidth = estimateHoverLabelWidth(label, badge);
+  const viewportLeft = window.scrollX + HOVER_LABEL_VIEWPORT_GAP;
+  const viewportRight = window.scrollX + window.innerWidth - HOVER_LABEL_VIEWPORT_GAP;
+  const viewportTop = window.scrollY + HOVER_LABEL_VIEWPORT_GAP;
+  const viewportBottom = window.scrollY + window.innerHeight - HOVER_LABEL_VIEWPORT_GAP;
+  const canFitAbove = rect.y - HOVER_LABEL_GAP - HOVER_LABEL_HEIGHT >= viewportTop;
+  const canFitBelow = rect.y + rect.height + HOVER_LABEL_GAP + HOVER_LABEL_HEIGHT <= viewportBottom;
+  const canFitRight = rect.x + rect.width + HOVER_LABEL_GAP + labelWidth <= viewportRight;
+  const canFitLeft = rect.x - HOVER_LABEL_GAP - labelWidth >= viewportLeft;
+
+  if (canFitAbove) {
+    return {
+      left: clamp(rect.x, viewportLeft, viewportRight - labelWidth),
+      top: rect.y - HOVER_LABEL_GAP - HOVER_LABEL_HEIGHT,
+      maxWidth: Math.min(HOVER_LABEL_MAX_WIDTH, viewportRight - viewportLeft)
+    };
+  }
+
+  if (canFitBelow) {
+    return {
+      left: clamp(rect.x, viewportLeft, viewportRight - labelWidth),
+      top: rect.y + rect.height + HOVER_LABEL_GAP,
+      maxWidth: Math.min(HOVER_LABEL_MAX_WIDTH, viewportRight - viewportLeft)
+    };
+  }
+
+  if (canFitRight) {
+    return {
+      left: rect.x + rect.width + HOVER_LABEL_GAP,
+      top: clamp(rect.y + rect.height / 2 - HOVER_LABEL_HEIGHT / 2, viewportTop, viewportBottom - HOVER_LABEL_HEIGHT),
+      maxWidth: Math.min(HOVER_LABEL_MAX_WIDTH, viewportRight - viewportLeft)
+    };
+  }
+
+  if (canFitLeft) {
+    return {
+      left: rect.x - HOVER_LABEL_GAP - labelWidth,
+      top: clamp(rect.y + rect.height / 2 - HOVER_LABEL_HEIGHT / 2, viewportTop, viewportBottom - HOVER_LABEL_HEIGHT),
+      maxWidth: Math.min(HOVER_LABEL_MAX_WIDTH, viewportRight - viewportLeft)
+    };
+  }
+
+  return {
+    left: clamp(rect.x, viewportLeft, Math.max(viewportLeft, viewportRight - labelWidth)),
+    top: clamp(rect.y - HOVER_LABEL_GAP - HOVER_LABEL_HEIGHT, viewportTop, Math.max(viewportTop, viewportBottom - HOVER_LABEL_HEIGHT)),
+    maxWidth: Math.min(HOVER_LABEL_MAX_WIDTH, viewportRight - viewportLeft)
+  };
+}
+
+function estimateHoverLabelWidth(label: string, badge: string): number {
+  return Math.min(HOVER_LABEL_MAX_WIDTH, Math.max(96, label.length * 7 + badge.length * 7 + 36));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function normalizeBorderRadius(borderRadius: string | undefined): string | undefined {
+  const value = borderRadius?.trim();
+  return value && value !== "-" ? value : undefined;
 }
 
 function isSameInspectionTarget(a: HoverInspection, b: HoverInspection): boolean {
@@ -1415,6 +1588,12 @@ function getAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["
     width: annotation.rect.width,
     height: annotation.rect.height
   };
+}
+
+function getAnnotationBorderRadius(annotation: DomAnnotation): string | undefined {
+  const liveElement = document.querySelector(annotation.selector);
+  if (liveElement) return normalizeBorderRadius(window.getComputedStyle(liveElement).borderRadius);
+  return normalizeBorderRadius(annotation.computedStyles.borderRadius);
 }
 
 function getComputedBoxSnapshot(styles: Record<string, string>, prefix: "margin" | "padding"): string {

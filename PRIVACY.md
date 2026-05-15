@@ -1,8 +1,8 @@
-# Privacy Policy for DOM AI Annotator
+# Privacy Policy for DOM Review
 
 Last updated: May 14, 2026
 
-DOM AI Annotator is a Chrome extension that helps users select DOM elements on webpages, attach UI feedback and measurements, and export annotations as structured Markdown.
+DOM Review is a Chrome extension that helps users select DOM elements on webpages, attach UI feedback and measurements, and export annotations as structured Markdown.
 
 ## Data Stored by the Extension
 
@@ -16,7 +16,7 @@ This data is stored locally with Chrome extension storage so users can resume th
 
 ## Data Sharing
 
-DOM AI Annotator does not sell, transfer, or share user data with third parties. The extension does not require an account and does not upload annotation data to external services.
+DOM Review does not sell, transfer, or share user data with third parties. The extension does not require an account and does not upload annotation data to external services.
 
 ## Remote Code
 
@@ -24,7 +24,7 @@ The extension does not load or execute remote JavaScript or WebAssembly. All scr
 
 ## Permissions
 
-The extension requests permissions needed to open the side panel, inspect user-selected DOM elements, highlight annotation targets, store local annotation data, and copy user-initiated Markdown exports to the clipboard.
+The extension requests permissions needed to open the side panel, inspect user-selected DOM elements, highlight annotation targets, and store local annotation data. Broad site access is used so annotation can work consistently across ordinary webpages and local file pages, but content scripts are injected on demand after the user opens the panel or starts a tool. The extension does not request clipboard read or clipboard write permissions; imports are manually pasted by the user, and exports use the browser Clipboard API only after a user click.
 
 ## Contact
 

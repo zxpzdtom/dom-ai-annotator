@@ -14,8 +14,12 @@
   pointer-events: none;
   z-index: 2147483647;
   color-scheme: light;
+  font-size: 16px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
 }
 
 * {
@@ -30,6 +34,15 @@
   height: 0;
   overflow: visible;
   z-index: 2147483647;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 .dom-ai-document-layer {
@@ -450,13 +463,21 @@
   z-index: 10000;
 }
 
-.dom-ai-pin-left {
+.dom-ai-pin-placement-left {
   transform: translate(-100%, -50%);
 }
 
-.dom-ai-pin-left::before {
+.dom-ai-pin-placement-left::before {
   right: 34px;
   left: auto;
+}
+
+.dom-ai-pin-placement-bottom {
+  transform: translate(-50%, 0);
+}
+
+.dom-ai-pin-placement-top {
+  transform: translate(-50%, -100%);
 }
 
 .dom-ai-pin-marker {
@@ -493,13 +514,31 @@
   z-index: 0;
 }
 
-.dom-ai-pin-left .dom-ai-pin-marker {
+.dom-ai-pin-placement-left .dom-ai-pin-marker {
   border-radius: 14px 14px 5px 14px;
 }
 
-.dom-ai-pin-left .dom-ai-pin-marker::after {
+.dom-ai-pin-placement-left .dom-ai-pin-marker::after {
   right: 4px;
   left: auto;
+}
+
+.dom-ai-pin-placement-bottom .dom-ai-pin-marker,
+.dom-ai-pin-placement-top .dom-ai-pin-marker {
+  border-radius: 14px;
+}
+
+.dom-ai-pin-placement-bottom .dom-ai-pin-marker::after {
+  top: 3px;
+  bottom: auto;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.dom-ai-pin-placement-top .dom-ai-pin-marker::after {
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
 }
 
 .dom-ai-pin-number {
@@ -523,13 +562,21 @@
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
-.dom-ai-pin-left .dom-ai-pin-number {
+.dom-ai-pin-placement-left .dom-ai-pin-number {
   border-radius: 10px 10px 4px 10px;
+}
+
+.dom-ai-pin-placement-bottom .dom-ai-pin-number {
+  border-radius: 10px;
+}
+
+.dom-ai-pin-placement-top .dom-ai-pin-number {
+  border-radius: 10px;
 }
 
 .dom-ai-pin-card {
   position: absolute;
-  top: 50%;
+  top: var(--dom-ai-pin-card-top, 50%);
   left: 50px;
   z-index: 2;
   width: min(330px, calc(100vw - 40px));
@@ -540,7 +587,7 @@
   box-shadow: 0 24px 58px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.92);
   opacity: 0;
   pointer-events: none;
-  transform: translate(-8px, -50%) scale(0.98);
+  transform: translate(-8px, 0) scale(0.98);
   transform-origin: left center;
   transition-property: opacity, transform, filter;
   transition-duration: 170ms;
@@ -549,10 +596,10 @@
   filter: blur(2px);
 }
 
-.dom-ai-pin-left .dom-ai-pin-card {
+.dom-ai-pin-card-side-left .dom-ai-pin-card {
   right: 50px;
   left: auto;
-  transform: translate(8px, -50%) scale(0.98);
+  transform: translate(8px, 0) scale(0.98);
   transform-origin: right center;
 }
 
@@ -560,13 +607,13 @@
 .dom-ai-pin:focus-within .dom-ai-pin-card {
   opacity: 1;
   pointer-events: auto;
-  transform: translate(0, -50%) scale(1);
+  transform: translate(0, 0) scale(1);
   filter: blur(0);
 }
 
-.dom-ai-pin-left:hover .dom-ai-pin-card,
-.dom-ai-pin-left:focus-within .dom-ai-pin-card {
-  transform: translate(0, -50%) scale(1);
+.dom-ai-pin-card-side-left:hover .dom-ai-pin-card,
+.dom-ai-pin-card-side-left:focus-within .dom-ai-pin-card {
+  transform: translate(0, 0) scale(1);
 }
 
 .dom-ai-pin-dismissed .dom-ai-pin-card,
@@ -589,16 +636,17 @@
 
 .dom-ai-pin-card-index {
   display: grid;
-  width: 30px;
+  width: 36px;
   height: 30px;
   place-items: center;
-  border-radius: 50%;
+  border-radius: 10px 10px 10px 4px;
   background: var(--dom-ai-pin-bg, #0f9f78);
   color: white;
-  font-size: 14px;
-  font-weight: 900;
+  font-size: 13px;
+  font-weight: 850;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 10px 22px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 24%, transparent);
+  line-height: 1;
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 24%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .dom-ai-pin-card-title {
@@ -816,9 +864,19 @@
   transform: scale(1.02);
 }
 
-.dom-ai-pin-left:hover .dom-ai-pin-number,
-.dom-ai-pin-left:focus-within .dom-ai-pin-number {
+.dom-ai-pin-placement-left:hover .dom-ai-pin-number,
+.dom-ai-pin-placement-left:focus-within .dom-ai-pin-number {
   border-radius: 12px 12px 5px 12px;
+}
+
+.dom-ai-pin-placement-bottom:hover .dom-ai-pin-number,
+.dom-ai-pin-placement-bottom:focus-within .dom-ai-pin-number {
+  border-radius: 12px;
+}
+
+.dom-ai-pin-placement-top:hover .dom-ai-pin-number,
+.dom-ai-pin-placement-top:focus-within .dom-ai-pin-number {
+  border-radius: 12px;
 }
 
 .dom-ai-focused-annotation {

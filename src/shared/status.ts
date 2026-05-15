@@ -1,6 +1,6 @@
 import type { AnnotationStatus, DomAnnotation, FeedbackSeverity, LegacyAnnotationStatus } from "./types";
 
-export type Tone = "brand" | "note" | "neutral" | "danger" | "success";
+export type Tone = "brand" | "info" | "note" | "neutral" | "danger" | "success";
 
 export const statusLabels: Record<AnnotationStatus, string> = {
   pending: "待处理",
@@ -25,7 +25,7 @@ export const severityLabels: Record<FeedbackSeverity, string> = {
 
 export const pinPalettes: Record<AnnotationStatus, { bg: string; hover: string; badge: string; ring: string }> = {
   pending: { bg: "#64748b", hover: "#475569", badge: "#0f172a", ring: "rgba(100, 116, 139, 0.28)" },
-  sent: { bg: "#0f9f78", hover: "#087c62", badge: "#064e3b", ring: "rgba(15, 159, 120, 0.3)" },
+  sent: { bg: "#3b82f6", hover: "#2563eb", badge: "#1e3a8a", ring: "rgba(59, 130, 246, 0.28)" },
   changed: { bg: "#ea580c", hover: "#c2410c", badge: "#7c2d12", ring: "rgba(234, 88, 12, 0.3)" },
   needs_work: { bg: "#dc2626", hover: "#b91c1c", badge: "#7f1d1d", ring: "rgba(220, 38, 38, 0.3)" },
   passed: { bg: "#16a34a", hover: "#15803d", badge: "#14532d", ring: "rgba(22, 163, 74, 0.3)" },
@@ -50,7 +50,7 @@ export function getStatusTone(status: DomAnnotation["status"]): Tone {
   if (normalized === "passed") return "success";
   if (normalized === "needs_work") return "danger";
   if (normalized === "changed") return "note";
-  if (normalized === "sent") return "brand";
+  if (normalized === "sent") return "info";
   return "neutral";
 }
 

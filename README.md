@@ -1,4 +1,4 @@
-# DOM AI 标注器
+# DOM Review
 
 Chrome Manifest V3 插件，用来在真实网页上选择 DOM 元素、记录 UI 反馈、测量元素间距，并导出给 AI 或开发使用的修改说明。
 
@@ -95,11 +95,11 @@ npm run build
 
 - `storage`：保存本地标注。
 - `sidePanel`：展示右侧面板。
-- `tabs` / `activeTab` / `scripting`：向当前页面注入内容脚本并定位标注。
-- `clipboardWrite`：复制 Markdown 反馈。
-- `<all_urls>`：允许在普通网页和本地 file 页面使用标注能力。
+- `tabs`：获取当前标签页 URL 和标题，用于把标注归属到对应页面。
+- `activeTab` / `scripting`：用户主动打开面板或点击工具后，向当前页面按需注入内容脚本并定位标注。
+- `<all_urls>`：允许在普通网页和本地 file 页面使用标注能力；内容脚本仍然只在用户打开面板或点击工具后按需注入。
 
-导入标注采用手动粘贴，不申请 `clipboardRead`。这样安装权限提示更轻，也避免用户误解插件会主动读取剪贴板。
+插件不申请 `clipboardRead` 或 `clipboardWrite`。导入标注采用手动粘贴；复制 Markdown 使用用户点击触发的浏览器剪贴板 API。
 
 ## 当前限制
 
