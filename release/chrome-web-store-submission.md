@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.1.0.zip`
-- Version: `0.1.0`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.2.0.zip`
+- Version: `0.2.0`
 
 ## Listing
 
