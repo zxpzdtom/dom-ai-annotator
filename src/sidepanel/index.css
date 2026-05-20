@@ -94,3 +94,24 @@ textarea {
   background: rgba(71, 85, 105, 0.62);
   background-clip: padding-box;
 }
+
+/* Status change flash animations */
+@keyframes status-flash-green {
+  0% { background-color: transparent; }
+  15% { background-color: rgba(16, 185, 129, 0.12); }
+  100% { background-color: transparent; }
+}
+
+@keyframes status-flash-amber {
+  0% { background-color: transparent; }
+  15% { background-color: rgba(245, 158, 11, 0.12); }
+  100% { background-color: transparent; }
+}
+
+.status-flash-resolved {
+  animation: status-flash-green 1.5s ease-out;
+}
+
+.status-flash-needs-work {
+  animation: status-flash-amber 1.5s ease-out;
+}

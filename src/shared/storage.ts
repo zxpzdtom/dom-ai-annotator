@@ -102,6 +102,30 @@ export async function clearAnnotationsForUrl(url: string): Promise<void> {
   });
 }
 
+export async function markFixRequested(id: string, requested: boolean): Promise<void> {
+  const annotations = await getAnnotations();
+  const now = new Date().toISOString();
+  await chrome.storage.local.set({
+    [STORAGE_KEY]: annotations.map((item) =>
+      item.id === id ? { ...item, fixRequested: requested, updatedAt: now } : item
+    )
+  });
+}
+
+export async function updateAnnotationScreenshot(
+  id: string,
+  field: "screenshot" | "screenshotAfter",
+  screenshot: import("./types").AnnotationScreenshot
+): Promise<void> {
+  const annotations = await getAnnotations();
+  const now = new Date().toISOString();
+  await chrome.storage.local.set({
+    [STORAGE_KEY]: annotations.map((item) =>
+      item.id === id ? { ...item, [field]: screenshot, updatedAt: now } : item
+    )
+  });
+}
+
 export function subscribeAnnotations(callback: () => void): () => void {
   const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
     if (areaName === "local" && changes[STORAGE_KEY]) {

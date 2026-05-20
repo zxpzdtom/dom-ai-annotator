@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { MessageCircle, Ruler, Trash2, Type, X } from "lucide-react";
+import { AlertTriangle, Ban, Check, Clipboard, Filter, MessageCircle, Network, Ruler, TerminalSquare, Trash2, Type, X } from "lucide-react";
 import cssText from "./content.css?inline";
 import { createAnnotationDraft, getCssSelector } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationPinAnchor, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity } from "../shared/types";
-import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationStatus } from "../shared/storage";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity, MonitorEvent, MonitorSnapshot } from "../shared/types";
+import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { writeClipboardText } from "../shared/clipboard";
 
@@ -26,6 +26,9 @@ const HOVER_LABEL_HEIGHT = 34;
 const HOVER_LABEL_MAX_WIDTH = 320;
 const HOVER_LABEL_VIEWPORT_GAP = 8;
 const MEASURE_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#ea580c", "#0891b2", "#16a34a"];
+const MONITOR_SCRIPT_ID = "dom-ai-monitor-bridge-script";
+const MAX_MONITOR_EVENTS = 400;
+const MONITOR_EVENT_NAME = "dom-ai-monitor-event";
 const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
     <path d="M8.2 25.8v-5.2A8.7 8.7 0 0 1 5.5 14.2C5.5 9 9.7 5 15.1 5h4.7c5.4 0 9.7 4 9.7 9.2s-4.3 9.2-9.7 9.2h-6.4l-5.2 2.4Z" fill="white" stroke="black" stroke-width="3.2" stroke-linejoin="round"/>
@@ -106,6 +109,65 @@ type DocumentSize = {
 
 type ColorMode = "rgb" | "hex" | "hsl";
 
+declare global {
+  interface Window {
+    __DOM_AI_OPEN_MONITOR_REQUESTED__?: boolean;
+  }
+}
+
+let monitorEnabled = false;
+let monitorEvents: MonitorEvent[] = [];
+let monitorBridgeInjected = false;
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data as { source?: string; type?: string; event?: MonitorEvent };
+  if (data?.source !== "DOM_AI_MONITOR_BRIDGE") return;
+
+  if (data.type === "ready") {
+    monitorBridgeInjected = true;
+    return;
+  }
+
+  if (data.type !== "event" || !data.event) return;
+  const item = data.event;
+  monitorEvents = [item, ...monitorEvents].slice(0, MAX_MONITOR_EVENTS);
+  window.dispatchEvent(new CustomEvent(MONITOR_EVENT_NAME, { detail: item }));
+  void chrome.runtime.sendMessage({ type: "DOM_AI_MONITOR_EVENT", event: item });
+});
+
+function getMonitorSnapshot(): MonitorSnapshot {
+  return {
+    events: monitorEvents,
+    enabled: monitorEnabled
+  };
+}
+
+function enableMonitor(): MonitorSnapshot {
+  monitorEnabled = true;
+  injectMonitorBridge();
+  return getMonitorSnapshot();
+}
+
+function clearMonitor(): MonitorSnapshot {
+  monitorEvents = [];
+  return getMonitorSnapshot();
+}
+
+function injectMonitorBridge() {
+  if (monitorBridgeInjected || document.getElementById(MONITOR_SCRIPT_ID)) {
+    monitorBridgeInjected = true;
+    return;
+  }
+
+  const script = document.createElement("script");
+  script.id = MONITOR_SCRIPT_ID;
+  script.src = chrome.runtime.getURL("monitorBridge.js");
+  script.async = false;
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
+}
+
 function App() {
   const [isPicking, setPicking] = useState(false);
   const [isMeasuring, setMeasuring] = useState(false);
@@ -121,7 +183,32 @@ function App() {
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null);
   const [documentSize, setDocumentSize] = useState<DocumentSize>(() => getDocumentSize());
   const [viewportOffset, setViewportOffset] = useState<ViewportOffset>(() => ({ x: window.scrollX, y: window.scrollY }));
+  const [monitorOpen, setMonitorOpen] = useState(() => Boolean(window.__DOM_AI_OPEN_MONITOR_REQUESTED__));
+  const [monitorView, setMonitorView] = useState<"console" | "network">("console");
+  const [monitorItems, setMonitorItems] = useState<MonitorEvent[]>(() => monitorEvents);
+  const [monitorSelectedIds, setMonitorSelectedIds] = useState<string[]>([]);
+  const [monitorSearch, setMonitorSearch] = useState("");
   const focusTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    enableMonitor();
+    setMonitorItems(getMonitorSnapshot().events);
+    const listener = (event: Event) => {
+      const item = (event as CustomEvent<MonitorEvent>).detail;
+      setMonitorItems((items) => [item, ...items.filter((existing) => existing.id !== item.id)].slice(0, MAX_MONITOR_EVENTS));
+    };
+    window.addEventListener(MONITOR_EVENT_NAME, listener);
+    return () => window.removeEventListener(MONITOR_EVENT_NAME, listener);
+  }, []);
+
+  useEffect(() => {
+    const openMonitor = () => {
+      window.__DOM_AI_OPEN_MONITOR_REQUESTED__ = true;
+      setMonitorOpen(true);
+    };
+    window.addEventListener("DOM_AI_OPEN_MONITOR", openMonitor);
+    return () => window.removeEventListener("DOM_AI_OPEN_MONITOR", openMonitor);
+  }, []);
 
   const refreshAnnotations = useCallback(async () => {
     const items = await getAnnotations();
@@ -155,7 +242,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const listener = (message: ContentMessage) => {
+    const listener = (message: ContentMessage, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
       if (message.type === "DOM_AI_START_PICKING") {
         setMeasuring(false);
         setResumePickingAfterComposer(false);
@@ -189,6 +276,14 @@ function App() {
       if (message.type === "DOM_AI_REFRESH_PINS") void refreshAnnotations();
       if (message.type === "DOM_AI_FOCUS_ANNOTATION") focusAndHighlightAnnotation(message.id, annotations);
       if (message.type === "DOM_AI_EDIT_ANNOTATION") openAnnotationEditor(message.id, annotations);
+      if (message.type === "DOM_AI_MONITOR_ENABLE") {
+        sendResponse(enableMonitor());
+        return true;
+      }
+      if (message.type === "DOM_AI_MONITOR_CLEAR") {
+        sendResponse(clearMonitor());
+        return true;
+      }
     };
 
     chrome.runtime.onMessage.addListener(listener);
@@ -465,6 +560,27 @@ function App() {
     void chrome.runtime.sendMessage({ type: "DOM_AI_OPEN_SIDE_PANEL" });
   }
 
+  const filteredMonitorItems = useMemo(
+    () => monitorItems.filter((item) => item.pageUrl === location.href).filter((item) => matchesMonitorSearch(item, monitorSearch)),
+    [monitorItems, monitorSearch]
+  );
+  const visibleMonitorItems = useMemo(
+    () => filteredMonitorItems.filter((item) => (monitorView === "network" ? item.kind === "network" : item.kind !== "network")),
+    [filteredMonitorItems, monitorView]
+  );
+  const monitorAlertCount = useMemo(() => monitorItems.filter(isMonitorAlert).length, [monitorItems]);
+
+  function toggleMonitorSelected(id: string) {
+    setMonitorSelectedIds((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
+  }
+
+  async function copyMonitorItems() {
+    const selected = monitorItems.filter((item) => monitorSelectedIds.includes(item.id));
+    const items = selected.length ? selected : monitorItems.filter(isMonitorAlert);
+    if (!items.length) return;
+    await writeClipboardText(exportMonitorEventsAsMarkdown(items));
+  }
+
   return (
     <div className="dom-ai-root">
       <div
@@ -549,7 +665,31 @@ function App() {
         onPick={startPickingMode}
         onMeasure={toggleMeasuringMode}
         onOpenPanel={openSidePanel}
+        onOpenMonitor={() => setMonitorOpen(true)}
+        monitorAlertCount={monitorAlertCount}
         onCancel={stopCurrentMode}
+      />
+
+      <MiniDevTools
+        open={monitorOpen}
+        view={monitorView}
+        events={visibleMonitorItems}
+        allEvents={monitorItems}
+        selectedIds={monitorSelectedIds}
+        search={monitorSearch}
+        alertCount={monitorAlertCount}
+        onOpenChange={setMonitorOpen}
+        onViewChange={setMonitorView}
+        onSearchChange={setMonitorSearch}
+        onToggleSelected={toggleMonitorSelected}
+        onClear={() => {
+          clearMonitor();
+          setMonitorItems([]);
+          setMonitorSelectedIds([]);
+        }}
+        onCopy={() => void copyMonitorItems()}
+        onSelectAll={() => setMonitorSelectedIds(visibleMonitorItems.map((item) => item.id))}
+        onClearSelection={() => setMonitorSelectedIds([])}
       />
     </div>
   );
@@ -715,6 +855,8 @@ function FloatingToolBar({
   onPick,
   onMeasure,
   onOpenPanel,
+  onOpenMonitor,
+  monitorAlertCount,
   onCancel
 }: {
   isPicking: boolean;
@@ -722,6 +864,8 @@ function FloatingToolBar({
   onPick: () => void;
   onMeasure: () => void;
   onOpenPanel: () => void;
+  onOpenMonitor: () => void;
+  monitorAlertCount: number;
   onCancel: () => void;
 }) {
   if (isPicking || isMeasuring) {
@@ -760,6 +904,11 @@ function FloatingToolBar({
         <kbd>M</kbd>
       </button>
       <span className="dom-ai-tool-divider" />
+      <button type="button" className="dom-ai-tool-button dom-ai-tool-button-monitor" onClick={onOpenMonitor}>
+        <TerminalSquare size={15} />
+        <span>Monitor</span>
+        {monitorAlertCount ? <b>{monitorAlertCount}</b> : null}
+      </button>
       <button type="button" className="dom-ai-tool-button dom-ai-tool-button-muted" onClick={onOpenPanel}>
         <kbd>⌥⇧C</kbd>
         <span>打开扩展</span>
@@ -774,6 +923,232 @@ function ReviewCursorIcon() {
       <path d="M3 3l7 17 2-7 7-2z" />
     </svg>
   );
+}
+
+function MiniDevTools({
+  open,
+  view,
+  events,
+  allEvents,
+  selectedIds,
+  search,
+  alertCount,
+  onOpenChange,
+  onViewChange,
+  onSearchChange,
+  onToggleSelected,
+  onClear,
+  onCopy,
+  onSelectAll,
+  onClearSelection
+}: {
+  open: boolean;
+  view: "console" | "network";
+  events: MonitorEvent[];
+  allEvents: MonitorEvent[];
+  selectedIds: string[];
+  search: string;
+  alertCount: number;
+  onOpenChange: (open: boolean) => void;
+  onViewChange: (view: "console" | "network") => void;
+  onSearchChange: (search: string) => void;
+  onToggleSelected: (id: string) => void;
+  onClear: () => void;
+  onCopy: () => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
+}) {
+  const selectedNetworkEvent = view === "network" ? events.find((event) => selectedIds.includes(event.id)) : undefined;
+  const consoleCount = allEvents.filter((event) => event.kind !== "network").length;
+  const networkCount = allEvents.filter((event) => event.kind === "network").length;
+
+  if (!open) {
+    return (
+      <button type="button" className="dom-ai-devtools-launcher dom-ai-interactive" onClick={() => onOpenChange(true)}>
+        <TerminalSquare size={16} />
+        <span>Monitor</span>
+        {alertCount ? <b>{alertCount}</b> : null}
+      </button>
+    );
+  }
+
+  return (
+    <section className="dom-ai-devtools dom-ai-interactive" aria-label="DOM Review DevTools">
+      <header className="dom-ai-devtools-tabs">
+        <button type="button" className={view === "console" ? "dom-ai-devtools-tab-active" : ""} onClick={() => onViewChange("console")}>
+          Console <span>{consoleCount}</span>
+        </button>
+        <button type="button" className={view === "network" ? "dom-ai-devtools-tab-active" : ""} onClick={() => onViewChange("network")}>
+          Network <span>{networkCount}</span>
+        </button>
+        <button type="button" className="dom-ai-devtools-close" onClick={() => onOpenChange(false)} aria-label="关闭监控面板">
+          <X size={17} />
+        </button>
+      </header>
+      <div className="dom-ai-devtools-toolbar">
+        <button type="button" className="dom-ai-devtools-icon-button dom-ai-devtools-danger" onClick={onClear} title="Clear">
+          <Ban size={16} />
+        </button>
+        <button type="button" className="dom-ai-devtools-icon-button" onClick={selectedIds.length ? onClearSelection : onSelectAll} title="Select visible">
+          <Check size={16} />
+        </button>
+        <button type="button" className="dom-ai-devtools-icon-button" onClick={onCopy} title="Copy selected to AI">
+          <Clipboard size={16} />
+        </button>
+        <div className="dom-ai-devtools-filter">
+          <Filter size={14} />
+          <input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Filter" />
+        </div>
+        <span className="dom-ai-devtools-count">{selectedIds.length ? `${selectedIds.length} selected` : `${events.length} visible`}</span>
+      </div>
+      <div className="dom-ai-devtools-body">
+        {view === "console" ? (
+          <ConsolePane events={events.filter((event) => event.kind !== "network")} selectedIds={selectedIds} onToggleSelected={onToggleSelected} />
+        ) : (
+          <>
+            <NetworkPane events={events.filter((event) => event.kind === "network")} selectedIds={selectedIds} onToggleSelected={onToggleSelected} />
+            {selectedNetworkEvent ? <NetworkInspector event={selectedNetworkEvent} /> : null}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ConsolePane({ events, selectedIds, onToggleSelected }: { events: MonitorEvent[]; selectedIds: string[]; onToggleSelected: (id: string) => void }) {
+  if (!events.length) return <div className="dom-ai-devtools-empty">No console messages</div>;
+  return (
+    <div className="dom-ai-console-pane">
+      {events.map((event) => (
+        <button key={event.id} type="button" className={`dom-ai-console-row dom-ai-console-row-${getMonitorToneName(event)} ${selectedIds.includes(event.id) ? "dom-ai-devtools-row-selected" : ""}`} onClick={() => onToggleSelected(event.id)}>
+          <span>{event.severity === "warn" || event.severity === "error" || event.kind === "error" ? <AlertTriangle size={15} /> : "›"}</span>
+          <code>{event.message}</code>
+          {event.details || event.stack ? <pre>{event.details || event.stack}</pre> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function NetworkPane({ events, selectedIds, onToggleSelected }: { events: MonitorEvent[]; selectedIds: string[]; onToggleSelected: (id: string) => void }) {
+  if (!events.length) return <div className="dom-ai-devtools-empty">No network requests</div>;
+  return (
+    <div className="dom-ai-network-pane">
+      <div className="dom-ai-network-head">
+        <span>Name</span>
+        <span>Status</span>
+        <span>Type</span>
+        <span>Method</span>
+        <span>Time</span>
+      </div>
+      {events.map((event) => (
+        <button key={event.id} type="button" className={`dom-ai-network-row ${selectedIds.includes(event.id) ? "dom-ai-devtools-row-selected" : ""}`} onClick={() => onToggleSelected(event.id)}>
+          <span>{getNetworkName(event.message)}</span>
+          <span className={event.ok === false ? "dom-ai-network-bad" : ""}>{event.status ?? "failed"}</span>
+          <span>{event.responseType || event.requestType || "fetch"}</span>
+          <span>{event.method || "GET"}</span>
+          <span>{event.durationMs ?? 0} ms</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function NetworkInspector({ event }: { event: MonitorEvent }) {
+  return (
+    <aside className="dom-ai-network-inspector">
+      <div className="dom-ai-network-inspector-tabs">
+        <span>Headers</span>
+        <span className="dom-ai-network-inspector-active">Preview</span>
+        <span>Response</span>
+        <span>Payload</span>
+      </div>
+      <div className="dom-ai-network-inspector-body">
+        <InspectorBlock title="General" rows={{
+          "Request URL": event.message.replace(/^\S+\s+/, ""),
+          "Request Method": event.method || "GET",
+          "Status Code": event.status ? `${event.status} ${event.statusText || ""}` : "failed",
+          "Duration": `${event.durationMs ?? 0} ms`
+        }} />
+        <InspectorBlock title="Request Headers" rows={event.requestHeaders || {}} />
+        {event.requestBody ? <InspectorText title="Payload" value={event.requestBody} /> : null}
+        <InspectorBlock title="Response Headers" rows={event.responseHeaders || {}} />
+        {event.responseBody ? <InspectorText title="Response" value={event.responseBody} /> : null}
+      </div>
+    </aside>
+  );
+}
+
+function InspectorBlock({ title, rows }: { title: string; rows: Record<string, string> }) {
+  const entries = Object.entries(rows);
+  if (!entries.length) return null;
+  return (
+    <section className="dom-ai-inspector-block">
+      <h3>{title}</h3>
+      {entries.map(([key, value]) => (
+        <p key={key}><b>{key}:</b> <span>{value}</span></p>
+      ))}
+    </section>
+  );
+}
+
+function InspectorText({ title, value }: { title: string; value: string }) {
+  return (
+    <section className="dom-ai-inspector-block">
+      <h3>{title}</h3>
+      <pre>{formatJsonLike(value)}</pre>
+    </section>
+  );
+}
+
+function getMonitorToneName(event: MonitorEvent) {
+  if (event.severity === "error" || event.kind === "error" || event.ok === false) return "error";
+  if (event.severity === "warn") return "warn";
+  return "info";
+}
+
+function isMonitorAlert(event: MonitorEvent) {
+  return event.severity === "warn" || event.severity === "error" || event.kind === "error" || event.ok === false;
+}
+
+function matchesMonitorSearch(event: MonitorEvent, search: string) {
+  const query = search.trim().toLowerCase();
+  if (!query) return true;
+  return [event.message, event.details, event.stack, event.requestBody, event.responseBody, event.statusText]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function getNetworkName(message: string) {
+  const url = message.replace(/^\S+\s+/, "");
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.split("/").filter(Boolean).pop() || parsed.hostname;
+  } catch {
+    return url;
+  }
+}
+
+function formatJsonLike(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function exportMonitorEventsAsMarkdown(events: MonitorEvent[]) {
+  return [
+    "# Runtime context for AI",
+    "",
+    ...events.map((event, index) => [
+      `## ${index + 1}. ${event.kind.toUpperCase()} ${event.method || ""} ${event.status ?? ""}`.trim(),
+      `- URL: ${event.message.replace(/^\S+\s+/, "")}`,
+      event.requestBody ? `- Request body:\n\n\`\`\`text\n${event.requestBody}\n\`\`\`` : "",
+      event.responseBody ? `- Response body:\n\n\`\`\`text\n${event.responseBody}\n\`\`\`` : "",
+      event.details ? `- Details: ${event.details}` : ""
+    ].filter(Boolean).join("\n\n"))
+  ].join("\n");
 }
 
 type AnnotationPinPosition = {
@@ -959,9 +1334,10 @@ function Composer({
     }
 
     const now = new Date().toISOString();
+    const newId = crypto.randomUUID();
     await saveAnnotation({
       ...state.draft,
-      id: crypto.randomUUID(),
+      id: newId,
       createdAt: now,
       updatedAt: now,
       feedback: {
@@ -973,6 +1349,8 @@ function Composer({
       status: "pending"
     });
     onSaved();
+    // Capture "before" screenshot in background (non-blocking)
+    void captureAnnotationScreenshot(newId, state.inspection.viewportRect);
   }, [canSave, comment, onSaved, severity, state.draft, state.editingAnnotation]);
 
   const remove = useCallback(async () => {
@@ -1834,6 +2212,50 @@ function focusAnnotation(id: string, annotations: DomAnnotation[]) {
     top: targetTop,
     left: 0,
     behavior: "smooth"
+  });
+}
+
+async function captureAnnotationScreenshot(annotationId: string, viewportRect: { x: number; y: number; width: number; height: number }) {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "DOM_AI_CAPTURE_SCREENSHOT",
+      rect: {
+        x: Math.round(viewportRect.x),
+        y: Math.round(viewportRect.y),
+        width: Math.round(viewportRect.width),
+        height: Math.round(viewportRect.height),
+      },
+    });
+    if (!response?.success) return;
+    const cropped = await cropScreenshot(response.data.dataUrl, viewportRect, window.devicePixelRatio);
+    await updateAnnotationScreenshot(annotationId, "screenshot", {
+      dataUrl: cropped,
+      capturedAt: response.data.capturedAt,
+      visibleRect: response.data.visibleRect,
+    });
+  } catch {
+    // Screenshot is non-critical; silently skip
+  }
+}
+
+function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width: number; height: number }, dpr: number): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const sx = Math.round(rect.x * dpr);
+      const sy = Math.round(rect.y * dpr);
+      const sw = Math.min(Math.round(rect.width * dpr), img.width - sx);
+      const sh = Math.min(Math.round(rect.height * dpr), img.height - sy);
+      if (sw <= 0 || sh <= 0) { resolve(fullDataUrl); return; }
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(fullDataUrl);
+    img.src = fullDataUrl;
   });
 }
 

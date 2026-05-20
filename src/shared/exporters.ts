@@ -105,7 +105,8 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
 function stripScreenshots(annotations: DomAnnotation[]): DomAnnotation[] {
   return annotations.map((annotation) => ({
     ...annotation,
-    screenshot: undefined
+    screenshot: undefined,
+    screenshotAfter: undefined
   }));
 }
 

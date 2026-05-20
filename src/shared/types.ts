@@ -58,6 +58,8 @@ export type DomAnnotation = {
   viewport: ViewportSnapshot;
   computedStyles: Record<string, string>;
   screenshot?: AnnotationScreenshot;
+  screenshotAfter?: AnnotationScreenshot;
+  fixRequested?: boolean;
   feedback: {
     comment: string;
     expected?: string;
@@ -72,6 +74,40 @@ export type AnnotationDraft = Omit<
   "id" | "createdAt" | "updatedAt" | "feedback" | "status"
 >;
 
+export type MonitorEventKind = "console" | "network" | "error";
+export type MonitorSeverity = "log" | "info" | "warn" | "error";
+
+export type MonitorEvent = {
+  id: string;
+  kind: MonitorEventKind;
+  severity: MonitorSeverity;
+  timestamp: string;
+  pageUrl: string;
+  title: string;
+  message: string;
+  details?: string;
+  stack?: string;
+  source?: string;
+  line?: number;
+  column?: number;
+  method?: string;
+  requestType?: "fetch" | "xhr" | "beacon" | "resource" | "websocket";
+  requestHeaders?: Record<string, string>;
+  requestBody?: string;
+  status?: number;
+  statusText?: string;
+  responseHeaders?: Record<string, string>;
+  responseBody?: string;
+  responseType?: string;
+  durationMs?: number;
+  ok?: boolean;
+};
+
+export type MonitorSnapshot = {
+  events: MonitorEvent[];
+  enabled: boolean;
+};
+
 export type ContentMessage =
   | { type: "DOM_AI_START_PICKING" }
   | { type: "DOM_AI_STOP_PICKING" }
@@ -79,9 +115,13 @@ export type ContentMessage =
   | { type: "DOM_AI_STOP_MEASURING" }
   | { type: "DOM_AI_FOCUS_ANNOTATION"; id: string }
   | { type: "DOM_AI_EDIT_ANNOTATION"; id: string }
-  | { type: "DOM_AI_REFRESH_PINS" };
+  | { type: "DOM_AI_REFRESH_PINS" }
+  | { type: "DOM_AI_MONITOR_ENABLE" }
+  | { type: "DOM_AI_MONITOR_CLEAR" };
 
 export type RuntimeMessage =
   | ContentMessage
   | { type: "DOM_AI_DRAFT_READY"; draft: AnnotationDraft }
-  | { type: "DOM_AI_OPEN_SIDE_PANEL" };
+  | { type: "DOM_AI_OPEN_SIDE_PANEL" }
+  | { type: "DOM_AI_MONITOR_EVENT"; event: MonitorEvent }
+  | { type: "DOM_AI_CAPTURE_SCREENSHOT"; rect?: { x: number; y: number; width: number; height: number } };

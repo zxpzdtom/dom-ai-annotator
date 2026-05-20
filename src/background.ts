@@ -20,7 +20,9 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === "complete") {
-    void syncTabSidePanel(tabId, tab.url);
+    void syncTabSidePanel(tabId, tab.url).then((enabled) => {
+      if (enabled && changeInfo.status === "complete") void ensureTabMonitor(tabId);
+    });
   }
 });
 
@@ -47,14 +49,32 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
-  if (message.type !== "DOM_AI_OPEN_SIDE_PANEL") return;
-  const tabId = sender.tab?.id;
-  const url = sender.tab?.url ?? "";
-  if (!tabId) return;
-  void syncTabSidePanel(tabId, url).then((enabled) => {
-    if (enabled) void chrome.sidePanel.open({ tabId });
-  });
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message.type === "DOM_AI_OPEN_SIDE_PANEL") {
+    const tabId = sender.tab?.id;
+    const url = sender.tab?.url ?? "";
+    if (!tabId) return;
+    void syncTabSidePanel(tabId, url).then((enabled) => {
+      if (enabled) void chrome.sidePanel.open({ tabId });
+    });
+    return;
+  }
+
+  if (message.type === "DOM_AI_CAPTURE_SCREENSHOT") {
+    const rect = (message as { rect?: { x: number; y: number; width: number; height: number } }).rect;
+    const windowId = sender.tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT;
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError || !dataUrl) {
+        sendResponse({ success: false, error: chrome.runtime.lastError?.message ?? "Capture failed" });
+        return;
+      }
+      sendResponse({
+        success: true,
+        data: { dataUrl, capturedAt: new Date().toISOString(), visibleRect: rect || { x: 0, y: 0, width: 0, height: 0 } },
+      });
+    });
+    return true; // async sendResponse
+  }
 });
 
 async function getActiveTab() {
@@ -90,6 +110,8 @@ async function syncTabSidePanel(tabId: number, url?: string): Promise<boolean> {
     path: "src/sidepanel/index.html",
     enabled: true
   });
+  void ensureTabMonitor(tabId);
+  void ensureAgentBridgeHost(tabId);
   return true;
 }
 
@@ -102,5 +124,29 @@ async function sendContentMessage(tabId: number, message: unknown) {
       files: ["content-loader.js"]
     });
     await chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+async function ensureTabMonitor(tabId: number) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["monitorBridge.js"],
+      world: "MAIN"
+    });
+    await chrome.tabs.sendMessage(tabId, { type: "DOM_AI_MONITOR_ENABLE" });
+  } catch {
+    // Browser internal pages and restricted documents cannot be scripted.
+  }
+}
+
+async function ensureAgentBridgeHost(tabId: number) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["agentBridgeHost.js"]
+    });
+  } catch {
+    // Browser internal pages and restricted documents cannot be scripted.
   }
 }
