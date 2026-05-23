@@ -16,8 +16,8 @@ import {
   Globe2,
   Info,
   ListChecks,
-  MoreHorizontal,
   Network,
+  Pencil,
   Ruler,
   TerminalSquare,
   Trash2,
@@ -33,7 +33,6 @@ import {
   clearAnnotationsForUrl,
   deleteAnnotation,
   getAnnotations,
-  markFixRequested,
   normalizeStatus,
   saveAnnotations,
   subscribeAnnotations,
@@ -55,7 +54,7 @@ type StatusFilter = "all" | AnnotationStatus;
 type PanelMode = "annotations" | "monitor";
 type MonitorFilter = "all" | MonitorEventKind | "alerts";
 type MonitorView = "console" | "network";
-type NetworkSortKey = "name" | "status" | "type" | "initiator" | "time";
+type NetworkSortKey = "name" | "status" | "type" | "time";
 type NetworkSortState = { key: NetworkSortKey; direction: "asc" | "desc" } | null;
 type ImportSummary = {
   total: number;
@@ -332,6 +331,11 @@ function App() {
     }
   }
 
+  async function cancelActiveTool() {
+    if (isPicking) await stopPicking();
+    if (isMeasuring) await stopMeasuring();
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isEditableEvent(event)) return;
@@ -367,6 +371,7 @@ function App() {
       return;
     }
     if (!tab?.id) return;
+    await cancelActiveTool();
     setError("");
     try {
       await sendContentMessage(tab.id, { type: "DOM_AI_FOCUS_ANNOTATION", id });
@@ -381,8 +386,10 @@ function App() {
       return;
     }
     if (!tab?.id) return;
+    await cancelActiveTool();
     setError("");
     try {
+      await sendContentMessage(tab.id, { type: "DOM_AI_CLOSE_IMAGE_PREVIEW" });
       await sendContentMessage(tab.id, { type: "DOM_AI_EDIT_ANNOTATION", id });
     } catch (error) {
       setError(getContentScriptErrorMessage(error, "编辑"));
@@ -824,6 +831,10 @@ function App() {
                 onFocus={() => void focusAnnotation(annotation.id)}
                 onEdit={() => void editAnnotation(annotation.id)}
                 onDelete={() => void deleteAnnotation(annotation.id)}
+                onPreviewInPage={(dataUrl) => {
+                  void cancelActiveTool();
+                  if (tab?.id) void sendContentMessage(tab.id, { type: "DOM_AI_SHOW_IMAGE_PREVIEW", dataUrl });
+                }}
                 selected={selectedIds.includes(annotation.id)}
                 onToggleSelected={() => toggleSelected(annotation.id)}
                 selectionMode={selectionMode}
@@ -940,6 +951,7 @@ function AnnotationCard({
   onFocus,
   onEdit,
   onDelete,
+  onPreviewInPage,
   selected,
   onToggleSelected,
   selectionMode,
@@ -950,13 +962,15 @@ function AnnotationCard({
   onFocus: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onPreviewInPage: (dataUrl: string) => void;
   selected: boolean;
   onToggleSelected: () => void;
   selectionMode: boolean;
   changeType?: "resolved" | "needs_work";
 }) {
   const status = normalizeStatus(annotation.status);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [fixCopied, setFixCopied] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const title = getAnnotationTitle(annotation);
   const rectText = `${Math.round(annotation.rect.width)}x${Math.round(annotation.rect.height)}`;
 
@@ -975,19 +989,19 @@ function AnnotationCard({
       className={`dom-ai-masonry-item relative overflow-visible border-b border-black/[0.06] px-3 py-3.5 text-ink-950 ${selected ? "bg-brand-50 outline outline-1 outline-brand-500" : ""} ${selectionMode ? "cursor-pointer transition-[background-color,transform] duration-150 hover:bg-brand-50/50 active:scale-[0.99]" : "cursor-pointer transition-colors duration-150 hover:bg-ink-50"} ${changeType === "resolved" ? "status-flash-resolved" : changeType === "needs_work" ? "status-flash-needs-work" : ""}`}
       onClick={handleCardClick}
     >
-      <div className="grid grid-cols-[36px_minmax(0,1fr)] gap-2 pr-8">
+      <div className="grid grid-cols-[24px_minmax(0,1fr)] gap-1.5 pr-1">
         <div className="pt-0.5">
           {selectionMode ? (
             <button
               data-card-action="true"
-              className={`grid h-[32px] w-9 shrink-0 place-items-center rounded-[11px_11px_11px_4px] text-xs font-bold transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.96] ${selected ? "bg-brand-600 text-white shadow-[0_8px_18px_rgba(15,159,120,0.24)]" : "bg-ink-50 text-ink-300 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)]"}`}
+              className={`grid h-[24px] w-6 shrink-0 place-items-center rounded-md text-xs font-bold transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.96] ${selected ? "bg-brand-600 text-white shadow-[0_4px_10px_rgba(15,159,120,0.24)]" : "bg-ink-50 text-ink-300 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)]"}`}
               onClick={onToggleSelected}
               aria-label={selected ? "取消选择" : "选择标注"}
             >
-              {selected ? <Check size={15} strokeWidth={2.7} /> : null}
+              {selected ? <Check size={13} strokeWidth={2.7} /> : null}
             </button>
           ) : (
-            <span className={`relative grid h-[32px] w-9 shrink-0 place-items-center rounded-[11px_11px_11px_4px] text-xs font-extrabold leading-none text-white tabular-nums shadow-[0_8px_18px_rgba(17,24,39,0.1),0_0_0_2px_rgba(255,255,255,0.96)] after:absolute after:bottom-[3px] after:left-[3px] after:h-2 after:w-2 after:rotate-45 after:rounded-[2px] after:bg-inherit after:content-[''] ${getStatusDotClass(status)}`}>
+            <span className={`relative grid h-[24px] w-6 shrink-0 place-items-center rounded-md text-[10px] font-extrabold leading-none text-white tabular-nums shadow-[0_4px_10px_rgba(17,24,39,0.1)] ${getStatusDotClass(status)}`}>
               {index + 1}
             </span>
           )}
@@ -997,8 +1011,6 @@ function AnnotationCard({
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-ink-400">
             <span>{formatRelativeTime(annotation.updatedAt)}</span>
             <span className="font-bold text-ink-300">·</span>
-            <span className="tabular-nums">{rectText}</span>
-            <span className="font-bold text-ink-300">·</span>
             <StatusPill status={status} compact />
             <SeverityPill severity={annotation.feedback.severity} compact />
           </div>
@@ -1007,67 +1019,84 @@ function AnnotationCard({
             <Code2 size={13} className="shrink-0 text-ink-400" />
             <span className="truncate">{annotation.selector}</span>
           </div>
-          {annotation.screenshot && <ScreenshotCompare annotation={annotation} />}
+          {annotation.screenshot && <ScreenshotPreview annotation={annotation} rectText={rectText} onPreviewInPage={onPreviewInPage} />}
           {!selectionMode && (
             <div className="mt-2 flex items-center gap-1.5">
               <button
                 data-card-action="true"
                 className={`inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] font-bold transition-[background-color,color,transform] duration-150 active:scale-[0.96] ${
-                  annotation.fixRequested
+                  fixCopied
                     ? "bg-brand-50 text-brand-700 shadow-[inset_0_0_0_1px_rgba(15,159,120,0.2)]"
                     : "bg-white text-ink-600 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] hover:bg-brand-50 hover:text-brand-700"
                 }`}
                 onClick={async (e) => {
                   e.stopPropagation();
                   await writeClipboardText(formatFixPrompt(annotation));
-                  await markFixRequested(annotation.id, true);
+                  setFixCopied(true);
+                  window.setTimeout(() => setFixCopied(false), 2000);
                 }}
               >
-                <Wand2 size={12} />
-                {annotation.fixRequested ? "已复制给 AI" : "Fix with AI"}
+                {fixCopied ? <CheckCircle2 size={12} /> : <Wand2 size={12} />}
+                {fixCopied ? "已复制给 AI" : "Fix with AI"}
+              </button>
+              <button
+                data-card-action="true"
+                className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-bold text-ink-400 transition-[background-color,color,transform] duration-150 hover:bg-ink-100 hover:text-ink-700 active:scale-[0.96]"
+                onClick={(e) => { e.stopPropagation(); onEdit(); }}
+                aria-label="编辑"
+              >
+                <Pencil size={12} />
+                编辑
+              </button>
+              <button
+                data-card-action="true"
+                className={`inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-bold transition-[background-color,color,transform] duration-150 active:scale-[0.96] ${
+                  confirmingDelete
+                    ? "bg-red-50 text-red-600 shadow-[inset_0_0_0_1px_rgba(239,68,68,0.2)]"
+                    : "text-ink-400 hover:bg-red-50 hover:text-red-600"
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirmingDelete) {
+                    onDelete();
+                  } else {
+                    setConfirmingDelete(true);
+                    window.setTimeout(() => setConfirmingDelete(false), 3000);
+                  }
+                }}
+                onBlur={() => setConfirmingDelete(false)}
+                aria-label="删除"
+              >
+                <Trash2 size={12} />
+                {confirmingDelete ? "确认删除?" : "删除"}
               </button>
             </div>
           )}
         </div>
       </div>
-      <CardActionMenu
-        open={menuOpen}
-        onOpenChange={setMenuOpen}
-        onCopySelector={() => void writeClipboardText(annotation.selector)}
-        onEdit={onEdit}
-        onDelete={onDelete}
-      />
     </article>
   );
 }
 
-function ScreenshotCompare({ annotation }: { annotation: DomAnnotation }) {
-  const [view, setView] = useState<"before" | "after">("before");
-  const before = annotation.screenshot;
-  const after = annotation.screenshotAfter;
-  if (!before) return null;
+function ScreenshotPreview({ annotation, rectText, onPreviewInPage }: { annotation: DomAnnotation; rectText: string; onPreviewInPage: (dataUrl: string) => void }) {
+  const screenshot = annotation.screenshot;
+  if (!screenshot) return null;
+
   return (
-    <div className="mt-2 rounded-xl bg-ink-50 p-2 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.06)]" data-card-action="true" onClick={(e) => e.stopPropagation()}>
-      <div className="mb-1.5 flex items-center gap-1">
-        <button
-          className={`h-6 rounded-md px-2 text-[11px] font-bold transition-all duration-150 ${view === "before" ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.08)]" : "text-ink-500 hover:text-ink-800"}`}
-          onClick={() => setView("before")}
-        >
-          Before
-        </button>
-        {after ? (
-          <button
-            className={`h-6 rounded-md px-2 text-[11px] font-bold transition-all duration-150 ${view === "after" ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.08)]" : "text-ink-500 hover:text-ink-800"}`}
-            onClick={() => setView("after")}
-          >
-            After
-          </button>
-        ) : null}
+    <div
+      className="mt-2 rounded-xl bg-ink-50 p-2 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.06)] cursor-pointer transition-colors duration-150 hover:bg-ink-100"
+      data-card-action="true"
+      onClick={(e) => { e.stopPropagation(); onPreviewInPage(screenshot.dataUrl); }}
+      title="在页面中预览大图"
+    >
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="px-1 text-[11px] font-bold text-ink-500">快照</span>
+        <span className="text-[11px] tabular-nums text-ink-400">{rectText} ↗</span>
       </div>
       <img
-        src={view === "after" && after ? after.dataUrl : before.dataUrl}
-        alt={view === "before" ? "Before screenshot" : "After screenshot"}
-        className="w-full rounded-lg border border-ink-200"
+        src={screenshot.dataUrl}
+        alt="快照"
+        className="max-w-full max-h-48 rounded-lg border border-ink-200 pointer-events-none"
         loading="lazy"
       />
     </div>
@@ -1222,7 +1251,7 @@ function NetworkTable({
   onSort: (sort: NetworkSortState) => void;
 }) {
   const checkAllRef = useRef<HTMLInputElement>(null);
-  const { widths, onResizeStart, isResizing } = useColumnResize([32, 220, 76, 86, 150, 80]);
+  const { widths, onResizeStart, isResizing } = useColumnResize([32, 280, 76, 86, 80]);
 
   const allSelected = events.length > 0 && events.every((e) => selectedIds.includes(e.id));
   const someSelected = !allSelected && events.some((e) => selectedIds.includes(e.id));
@@ -1271,7 +1300,6 @@ function NetworkTable({
         {headerCell("name", "Name", 1)}
         {headerCell("status", "Status", 2)}
         {headerCell("type", "Type", 3)}
-        {headerCell("initiator", "Initiator", 4)}
         <div
           className="relative select-none px-2 py-1.5 cursor-pointer hover:bg-[#edf2fb]"
           onClick={() => onSort(nextNetworkSort(sort, "time"))}
@@ -1301,7 +1329,6 @@ function NetworkTable({
             <div className="truncate border-r border-[#edf0f4] px-2 py-1.5">{getNetworkName(event.message)}</div>
             <div className={`border-r border-[#edf0f4] px-2 py-1.5 tabular-nums ${event.ok === false ? "text-red-700" : ""}`}>{event.status ?? "(failed)"}</div>
             <div className="border-r border-[#edf0f4] px-2 py-1.5">{event.requestType ?? "fetch"}</div>
-            <div className="truncate border-r border-[#edf0f4] px-2 py-1.5 text-[#3f51b5] underline">{event.source || "page"}</div>
             <div className="px-2 py-1.5 tabular-nums">{event.durationMs ?? 0} ms</div>
           </div>
         );
@@ -1468,9 +1495,6 @@ function sortNetworkEvents(events: MonitorEvent[], sort: NetworkSortState): Moni
       case "type":
         cmp = (a.requestType ?? "").localeCompare(b.requestType ?? "");
         break;
-      case "initiator":
-        cmp = (a.source ?? "page").localeCompare(b.source ?? "page");
-        break;
       case "time":
         cmp = (a.durationMs ?? 0) - (b.durationMs ?? 0);
         break;
@@ -1480,89 +1504,6 @@ function sortNetworkEvents(events: MonitorEvent[], sort: NetworkSortState): Moni
   return sorted;
 }
 
-function CardActionMenu({
-  open,
-  onOpenChange,
-  onCopySelector,
-  onEdit,
-  onDelete
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCopySelector: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const idRef = React.useRef(`card-menu-${Math.random().toString(36).slice(2, 10)}`);
-  const anchorName = `--anchor-${idRef.current}`;
-  const triggerRef = React.useRef<HTMLButtonElement>(null);
-  const menuRef = React.useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      if (triggerRef.current?.contains(event.target as Node) || menuRef.current?.contains(event.target as Node)) return;
-      onOpenChange(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onOpenChange(false);
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onOpenChange, open]);
-
-  const run = (action: () => void) => {
-    action();
-    onOpenChange(false);
-  };
-
-  return (
-    <div data-card-action="true" className="absolute right-4 top-4">
-      <button
-        ref={triggerRef}
-        type="button"
-        className="grid h-8 w-8 place-items-center rounded-lg text-ink-400 transition-[background-color,color,transform] duration-150 hover:bg-ink-50 hover:text-ink-900 active:scale-[0.96]"
-        style={{ anchorName } as React.CSSProperties}
-        aria-label="更多操作"
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpenChange(!open);
-        }}
-      >
-        <MoreHorizontal size={18} />
-      </button>
-      <div
-        ref={menuRef}
-        className={`fixed z-[9999] min-w-44 rounded-xl bg-white p-1.5 text-sm font-semibold text-ink-900 shadow-[0_18px_44px_rgba(17,24,39,0.16),0_0_0_1px_rgba(17,24,39,0.08)] transition-[opacity,transform] duration-150 ${
-          open ? "scale-100 opacity-100" : "pointer-events-none scale-95 opacity-0"
-        }`}
-        style={
-          {
-            positionAnchor: anchorName,
-            top: "anchor(bottom)",
-            right: "anchor(right)",
-            translate: "0 6px",
-            positionTryFallbacks: "flip-block, flip-inline"
-          } as React.CSSProperties
-        }
-      >
-        <button className="flex h-10 w-full items-center rounded-lg px-3 text-left text-ink-800 transition-colors duration-150 hover:bg-ink-50" type="button" onClick={() => run(onCopySelector)}>
-          复制 selector
-        </button>
-        <button className="flex h-10 w-full items-center rounded-lg px-3 text-left text-ink-800 transition-colors duration-150 hover:bg-ink-50" type="button" onClick={() => run(onEdit)}>
-          编辑
-        </button>
-        <button className="flex h-10 w-full items-center rounded-lg px-3 text-left text-red-600 transition-colors duration-150 hover:bg-red-50" type="button" onClick={() => run(onDelete)}>
-          删除
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function ShortcutBadge({ active, children }: { active?: boolean; children: React.ReactNode }) {
   return (

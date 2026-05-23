@@ -284,6 +284,12 @@ function App() {
         sendResponse(clearMonitor());
         return true;
       }
+      if (message.type === "DOM_AI_SHOW_IMAGE_PREVIEW") {
+        showImagePreviewOverlay(message.dataUrl);
+      }
+      if (message.type === "DOM_AI_CLOSE_IMAGE_PREVIEW") {
+        document.getElementById("dom-ai-img-preview")?.remove();
+      }
     };
 
     chrome.runtime.onMessage.addListener(listener);
@@ -691,6 +697,7 @@ function App() {
         onSelectAll={() => setMonitorSelectedIds(visibleMonitorItems.map((item) => item.id))}
         onClearSelection={() => setMonitorSelectedIds([])}
       />
+
     </div>
   );
 }
@@ -2257,6 +2264,145 @@ function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width
     img.onerror = () => resolve(fullDataUrl);
     img.src = fullDataUrl;
   });
+}
+
+/** Show image preview overlay directly on documentElement (outside Shadow DOM to avoid contain:layout issues) */
+function showImagePreviewOverlay(dataUrl: string) {
+  // Remove existing overlay if any
+  document.getElementById("dom-ai-img-preview")?.remove();
+
+  let scale = 1;
+  let translateX = 0;
+  let translateY = 0;
+  let isPanning = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panStartTX = 0;
+  let panStartTY = 0;
+
+  const overlay = document.createElement("div");
+  overlay.id = "dom-ai-img-preview";
+  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.82);backdrop-filter:blur(6px);cursor:zoom-out;font-family:Inter,system-ui,-apple-system,sans-serif;";
+
+  function close() { overlay.remove(); document.removeEventListener("keydown", onKey); }
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape") close();
+    if (e.key === "0") { scale = 1; translateX = 0; translateY = 0; applyTransform(); }
+  }
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", close);
+
+  const inner = document.createElement("div");
+  inner.style.cssText = "position:relative;max-width:94vw;max-height:94vh;display:flex;flex-direction:column;align-items:center;gap:10px;cursor:default;";
+  inner.addEventListener("click", (e) => e.stopPropagation());
+  overlay.appendChild(inner);
+
+  // Close button
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "✕";
+  closeBtn.style.cssText = "position:absolute;top:0;right:-36px;width:28px;height:28px;border-radius:50%;border:none;background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.8);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.15s;";
+  closeBtn.addEventListener("mouseenter", () => { closeBtn.style.background = "rgba(255,255,255,0.25)"; });
+  closeBtn.addEventListener("mouseleave", () => { closeBtn.style.background = "rgba(255,255,255,0.12)"; });
+  closeBtn.addEventListener("click", close);
+  inner.appendChild(closeBtn);
+
+  // Zoom indicator
+  const zoomIndicator = document.createElement("div");
+  zoomIndicator.style.cssText = "position:absolute;bottom:8px;right:-36px;font-size:10px;font-weight:600;color:rgba(255,255,255,0.5);text-align:center;width:28px;display:none;";
+  inner.appendChild(zoomIndicator);
+
+  // Content area
+  const content = document.createElement("div");
+  content.style.cssText = "overflow:hidden;border-radius:8px;";
+  inner.appendChild(content);
+
+  // Zoom transform wrapper
+  let transformTarget: HTMLElement | null = null;
+
+  function applyTransform() {
+    if (transformTarget) {
+      transformTarget.style.transform = `scale(${scale}) translate(${translateX}px, ${translateY}px)`;
+      transformTarget.style.cursor = scale > 1 ? "grab" : "default";
+    }
+    if (scale > 1.01) {
+      zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
+      zoomIndicator.style.display = "block";
+    } else {
+      zoomIndicator.style.display = "none";
+    }
+  }
+
+  // Zoom via wheel
+  content.addEventListener("wheel", (e: WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const newScale = Math.max(0.5, Math.min(8, scale * factor));
+    if (newScale === scale) return;
+
+    if (transformTarget) {
+      const rect = transformTarget.getBoundingClientRect();
+      const cx = e.clientX - rect.left - rect.width / 2;
+      const cy = e.clientY - rect.top - rect.height / 2;
+      const ds = newScale / scale;
+      translateX = cx - ds * (cx - translateX);
+      translateY = cy - ds * (cy - translateY);
+    }
+    scale = newScale;
+    applyTransform();
+  }, { passive: false });
+
+  // Pan via pointer
+  content.addEventListener("pointerdown", (e: PointerEvent) => {
+    if (scale <= 1) return;
+    isPanning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartTX = translateX;
+    panStartTY = translateY;
+    if (transformTarget) transformTarget.style.cursor = "grabbing";
+  });
+  content.addEventListener("pointermove", (e: PointerEvent) => {
+    if (!isPanning) return;
+    translateX = panStartTX + (e.clientX - panStartX) / scale;
+    translateY = panStartTY + (e.clientY - panStartY) / scale;
+    applyTransform();
+  });
+  content.addEventListener("pointerup", () => {
+    isPanning = false;
+    if (transformTarget) transformTarget.style.cursor = scale > 1 ? "grab" : "default";
+  });
+
+  // Double-click to toggle 2x zoom
+  content.addEventListener("dblclick", (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (scale > 1.01) {
+      scale = 1; translateX = 0; translateY = 0;
+    } else {
+      scale = 2;
+      if (transformTarget) {
+        const rect = transformTarget.getBoundingClientRect();
+        translateX = (rect.width / 2 - (e.clientX - rect.left)) / scale;
+        translateY = (rect.height / 2 - (e.clientY - rect.top)) / scale;
+      }
+    }
+    applyTransform();
+  });
+
+  // Render image
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = "transform-origin:center center;will-change:transform;";
+  transformTarget = wrapper;
+
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = "快照";
+  img.draggable = false;
+  img.style.cssText = "display:block;max-width:88vw;max-height:88vh;border-radius:6px;object-fit:contain;";
+  wrapper.appendChild(img);
+  content.appendChild(wrapper);
+
+  document.documentElement.appendChild(overlay);
 }
 
 function mount() {

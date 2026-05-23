@@ -33,6 +33,21 @@ export default {
       boxShadow: {
         panel: "0 18px 48px rgba(17, 24, 39, 0.12), 0 2px 8px rgba(17, 24, 39, 0.08)",
         soft: "0 8px 24px rgba(17, 24, 39, 0.08)"
+      },
+      keyframes: {
+        "toast-in": {
+          from: { opacity: "0", transform: "translateX(-50%) translateY(6px)" },
+          to: { opacity: "1", transform: "translateX(-50%) translateY(0)" },
+        },
+        "pulse-red": {
+          "0%": { boxShadow: "0 0 0 0 rgba(220,38,38,0.35)" },
+          "70%": { boxShadow: "0 0 0 6px rgba(220,38,38,0)" },
+          "100%": { boxShadow: "0 0 0 0 rgba(220,38,38,0)" },
+        },
+      },
+      animation: {
+        "toast-in": "toast-in 200ms cubic-bezier(0.2, 0, 0, 1)",
+        "pulse-red": "pulse-red 0.4s ease",
       }
     }
   },

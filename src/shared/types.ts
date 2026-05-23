@@ -117,7 +117,9 @@ export type ContentMessage =
   | { type: "DOM_AI_EDIT_ANNOTATION"; id: string }
   | { type: "DOM_AI_REFRESH_PINS" }
   | { type: "DOM_AI_MONITOR_ENABLE" }
-  | { type: "DOM_AI_MONITOR_CLEAR" };
+  | { type: "DOM_AI_MONITOR_CLEAR" }
+  | { type: "DOM_AI_SHOW_IMAGE_PREVIEW"; dataUrl: string }
+  | { type: "DOM_AI_CLOSE_IMAGE_PREVIEW" };
 
 export type RuntimeMessage =
   | ContentMessage
