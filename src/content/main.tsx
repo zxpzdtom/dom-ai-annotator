@@ -4,7 +4,7 @@ import { AlertTriangle, Ban, Check, Clipboard, Filter, MessageCircle, Network, R
 import cssText from "./content.css?inline";
 import { createAnnotationDraft, getCssSelector } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationPinAnchor, AnnotationStatus, ContentMessage, DomAnnotation, FeedbackSeverity, MonitorEvent, MonitorSnapshot } from "../shared/types";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { writeClipboardText } from "../shared/clipboard";
@@ -19,8 +19,6 @@ const PIN_COLLAPSED_HEIGHT = 38;
 const PIN_EXPANDED_WIDTH = 380;
 const PIN_CARD_ESTIMATED_HEIGHT = 318;
 const PIN_GAP = 8;
-const SMALL_TARGET_MIN_WIDTH = 96;
-const SMALL_TARGET_MIN_HEIGHT = 44;
 const HOVER_LABEL_GAP = 8;
 const HOVER_LABEL_HEIGHT = 34;
 const HOVER_LABEL_MAX_WIDTH = 320;
@@ -41,6 +39,7 @@ const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
 type ComposerState = {
   draft: AnnotationDraft;
   inspection: HoverInspection;
+  initialScreenshot?: AnnotationScreenshot;
   editingAnnotation?: DomAnnotation;
 };
 
@@ -381,22 +380,25 @@ function App() {
       setHoverInspection(getElementInspection(element));
     };
 
-    const onClick = (event: MouseEvent) => {
+    const onClick = async (event: MouseEvent) => {
       if (measurePaused) return;
       const element = getTargetElement(event);
       if (!element) return;
       event.preventDefault();
       event.stopPropagation();
       setResumePickingAfterComposer(true);
-      const inspection = getElementInspection(element);
-      setComposer({
-        draft: createAnnotationDraft(element, getPreferredAnnotationPinAnchor(inspection, {
-          x: event.clientX + window.scrollX,
-          y: event.clientY + window.scrollY
-        })),
-        inspection
-      });
       setPicking(false);
+      const inspection = getElementInspection(element);
+      const draft = createAnnotationDraft(element, getPreferredAnnotationPinAnchor(inspection, {
+        x: event.clientX + window.scrollX,
+        y: event.clientY + window.scrollY
+      }));
+      const initialScreenshot = await captureAnnotationScreenshotData(draft.selector, draft.rect);
+      setComposer({
+        draft,
+        inspection,
+        initialScreenshot
+      });
     };
 
     const onKey = (event: KeyboardEvent) => {
@@ -1175,7 +1177,7 @@ type PinCandidate = {
 
 function getAnnotationPinPosition(annotation: DomAnnotation): AnnotationPinPosition {
   const rect = getAnnotationDocumentRect(annotation);
-  const candidate = getPreferredAnnotationPinCandidateFromRect(rect, annotation.pin);
+  const candidate = getPreferredAnnotationPinCandidateFromRect(rect, getAnnotationLivePinAnchor(annotation, rect));
   const { anchor } = candidate;
   const viewportLeft = window.scrollX;
   const viewportRight = window.scrollX + window.innerWidth;
@@ -1201,10 +1203,9 @@ function getPreferredAnnotationPinAnchor(inspection: HoverInspection, clickPoint
 }
 
 function getPreferredAnnotationPinCandidateFromRect(rect: HoverInspection["documentRect"], preferredPoint?: AnnotationPinAnchor): PinCandidate {
-  const shouldAvoidTarget = rect.width < SMALL_TARGET_MIN_WIDTH || rect.height < SMALL_TARGET_MIN_HEIGHT;
   const preferredCandidate = preferredPoint ? inferPinCandidateFromPoint(rect, preferredPoint) : null;
   const markerOverlapsTarget = preferredCandidate ? markerRectOverlapsTarget(getPinMarkerRect(preferredCandidate.anchor, preferredCandidate.placement), rect) : false;
-  if (preferredCandidate && !shouldAvoidTarget && !markerOverlapsTarget) return preferredCandidate;
+  if (preferredCandidate && !markerOverlapsTarget) return preferredCandidate;
 
   const viewportLeft = window.scrollX + EDGE_GAP;
   const viewportRight = window.scrollX + window.innerWidth - EDGE_GAP;
@@ -1248,6 +1249,36 @@ function getPreferredAnnotationPinCandidateFromRect(rect: HoverInspection["docum
       y: rect.y + rect.height / 2
     },
     placement: "right"
+  };
+}
+
+function getAnnotationLivePinAnchor(annotation: DomAnnotation, liveRect: HoverInspection["documentRect"]): AnnotationPinAnchor | undefined {
+  if (!annotation.pin) return undefined;
+  if (!document.querySelector(annotation.selector)) return annotation.pin;
+
+  const savedRect = getSavedAnnotationDocumentRect(annotation);
+  const savedCandidate = inferPinCandidateFromPoint(savedRect, annotation.pin);
+  if (savedCandidate.placement === "left") {
+    return {
+      x: liveRect.x - PIN_GAP,
+      y: liveRect.y + (annotation.pin.y - savedRect.y)
+    };
+  }
+  if (savedCandidate.placement === "bottom") {
+    return {
+      x: liveRect.x + (annotation.pin.x - savedRect.x),
+      y: liveRect.y + liveRect.height + PIN_GAP
+    };
+  }
+  if (savedCandidate.placement === "top") {
+    return {
+      x: liveRect.x + (annotation.pin.x - savedRect.x),
+      y: liveRect.y - PIN_GAP
+    };
+  }
+  return {
+    x: liveRect.x + liveRect.width + PIN_GAP,
+    y: liveRect.y + (annotation.pin.y - savedRect.y)
   };
 }
 
@@ -1355,10 +1386,11 @@ function Composer({
       },
       status: "pending"
     });
+    if (state.initialScreenshot) {
+      await updateAnnotationScreenshot(newId, "screenshot", state.initialScreenshot);
+    }
     onSaved();
-    // Capture "before" screenshot in background (non-blocking)
-    void captureAnnotationScreenshot(newId, state.inspection.viewportRect);
-  }, [canSave, comment, onSaved, severity, state.draft, state.editingAnnotation]);
+  }, [canSave, comment, onSaved, severity, state.draft, state.editingAnnotation, state.initialScreenshot]);
 
   const remove = useCallback(async () => {
     if (!state.editingAnnotation) return;
@@ -1967,6 +1999,10 @@ function getAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["
     };
   }
 
+  return getSavedAnnotationDocumentRect(annotation);
+}
+
+function getSavedAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["documentRect"] {
   return {
     x: annotation.rect.x + annotation.rect.scrollX,
     y: annotation.rect.y + annotation.rect.scrollY,
@@ -2222,9 +2258,29 @@ function focusAnnotation(id: string, annotations: DomAnnotation[]) {
   });
 }
 
-async function captureAnnotationScreenshot(annotationId: string, viewportRect: { x: number; y: number; width: number; height: number }) {
+async function captureAnnotationScreenshotData(selector: string, savedRect: ElementRect): Promise<AnnotationScreenshot | undefined> {
   try {
-    const response = await chrome.runtime.sendMessage({
+    const viewportRect = getCurrentViewportRectForCapture(selector, savedRect);
+    const response = await captureVisibleTabWithoutOverlay(viewportRect);
+    if (!response?.success || !response.data) return undefined;
+    const cropped = await cropScreenshot(response.data.dataUrl, viewportRect, window.devicePixelRatio);
+    return {
+      dataUrl: cropped,
+      capturedAt: response.data.capturedAt,
+      visibleRect: response.data.visibleRect
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function captureVisibleTabWithoutOverlay(viewportRect: RectSnapshot): Promise<{ success: boolean; data?: { dataUrl: string; capturedAt: string; visibleRect: AnnotationScreenshot["visibleRect"] } }> {
+  const host = document.getElementById(ROOT_ID);
+  const previousVisibility = host?.style.visibility;
+  if (host) host.style.visibility = "hidden";
+  await nextAnimationFrame();
+  try {
+    return await chrome.runtime.sendMessage({
       type: "DOM_AI_CAPTURE_SCREENSHOT",
       rect: {
         x: Math.round(viewportRect.x),
@@ -2233,16 +2289,33 @@ async function captureAnnotationScreenshot(annotationId: string, viewportRect: {
         height: Math.round(viewportRect.height),
       },
     });
-    if (!response?.success) return;
-    const cropped = await cropScreenshot(response.data.dataUrl, viewportRect, window.devicePixelRatio);
-    await updateAnnotationScreenshot(annotationId, "screenshot", {
-      dataUrl: cropped,
-      capturedAt: response.data.capturedAt,
-      visibleRect: response.data.visibleRect,
-    });
-  } catch {
-    // Screenshot is non-critical; silently skip
+  } finally {
+    if (host) host.style.visibility = previousVisibility ?? "";
   }
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+function getCurrentViewportRectForCapture(selector: string, savedRect: ElementRect): RectSnapshot {
+  const liveElement = document.querySelector(selector);
+  if (liveElement) {
+    const rect = liveElement.getBoundingClientRect();
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  return {
+    x: savedRect.x + savedRect.scrollX - window.scrollX,
+    y: savedRect.y + savedRect.scrollY - window.scrollY,
+    width: savedRect.width,
+    height: savedRect.height
+  };
 }
 
 function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width: number; height: number }, dpr: number): Promise<string> {
@@ -2250,10 +2323,12 @@ function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement("canvas");
-      const sx = Math.round(rect.x * dpr);
-      const sy = Math.round(rect.y * dpr);
-      const sw = Math.min(Math.round(rect.width * dpr), img.width - sx);
-      const sh = Math.min(Math.round(rect.height * dpr), img.height - sy);
+      const sx = Math.max(0, Math.round(rect.x * dpr));
+      const sy = Math.max(0, Math.round(rect.y * dpr));
+      const ex = Math.min(img.width, Math.round((rect.x + rect.width) * dpr));
+      const ey = Math.min(img.height, Math.round((rect.y + rect.height) * dpr));
+      const sw = ex - sx;
+      const sh = ey - sy;
       if (sw <= 0 || sh <= 0) { resolve(fullDataUrl); return; }
       canvas.width = sw;
       canvas.height = sh;

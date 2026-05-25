@@ -12,7 +12,7 @@ export async function getLocale(): Promise<Locale> {
   } catch {
     // fallback
   }
-  return "en";
+  return "zh";
 }
 
 export async function saveLocale(locale: Locale): Promise<void> {

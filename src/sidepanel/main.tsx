@@ -2078,11 +2078,15 @@ async function ensureContentScript(tabId: number) {
     // The content script is not mounted yet.
   }
 
+  await injectContentScript(tabId);
+  await sendTabMessageWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
+}
+
+async function injectContentScript(tabId: number) {
   await chrome.scripting.executeScript({
     target: { tabId },
-    files: ["content-loader.js"]
+    func: () => import(chrome.runtime.getURL("content.js"))
   });
-  await sendTabMessageWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
 }
 
 async function ensurePageMonitorBridge(tabId: number) {

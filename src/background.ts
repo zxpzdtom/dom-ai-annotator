@@ -119,12 +119,16 @@ async function sendContentMessage(tabId: number, message: unknown) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content-loader.js"]
-    });
+    await injectContentScript(tabId);
     await chrome.tabs.sendMessage(tabId, message);
   }
+}
+
+async function injectContentScript(tabId: number) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => import(chrome.runtime.getURL("content.js"))
+  });
 }
 
 async function ensureTabMonitor(tabId: number) {
