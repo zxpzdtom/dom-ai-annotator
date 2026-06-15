@@ -25,7 +25,7 @@ import {
   X
 } from "lucide-react";
 import "./index.css";
-import type { AnnotationStatus, DomAnnotation, MonitorEvent, MonitorEventKind, MonitorSnapshot, RuntimeMessage } from "../shared/types";
+import type { AnnotationStatus, DomAnnotation, MonitorEvent, MonitorEventKind, MonitorSnapshot, PageContext, RuntimeMessage } from "../shared/types";
 import { JsonTree } from "./JsonTree";
 import { useColumnResize } from "./useColumnResize";
 import { getStatusTone, severityLabels, statusLabels, type Tone } from "../shared/status";
@@ -107,6 +107,7 @@ function App() {
   const [monitorSearch, setMonitorSearch] = useState("");
   const [monitorCopied, setMonitorCopied] = useState(false);
   const [networkSort, setNetworkSort] = useState<NetworkSortState>(null);
+  const [activeFrameContext, setActiveFrameContext] = useState<PageContext | null>(null);
 
   const loadTab = useCallback(async () => {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -192,6 +193,7 @@ function App() {
     setError("");
     setIsPicking(false);
     setIsMeasuring(false);
+    setActiveFrameContext(null);
   }, [currentUrl]);
 
   useEffect(() => {
@@ -212,12 +214,19 @@ function App() {
     if (currentUrl && !isCurrentPageExcluded && !byUrl.has(currentUrl)) {
       byUrl.set(currentUrl, { url: currentUrl, title: tab?.title || "当前页面", count: 0 });
     }
+    if (activeFrameContext?.url && !isExcludedUrl(activeFrameContext.url) && !byUrl.has(activeFrameContext.url)) {
+      byUrl.set(activeFrameContext.url, {
+        url: activeFrameContext.url,
+        title: activeFrameContext.title || activeFrameContext.url,
+        count: 0
+      });
+    }
     return Array.from(byUrl.values()).sort((a, b) => {
       if (a.url === currentUrl) return -1;
       if (b.url === currentUrl) return 1;
       return a.title.localeCompare(b.title);
     });
-  }, [annotations, currentUrl, isCurrentPageExcluded, tab?.title]);
+  }, [activeFrameContext, annotations, currentUrl, isCurrentPageExcluded, tab?.title]);
 
   useEffect(() => {
     if (selectedPageUrl && (isExcludedUrl(selectedPageUrl) || !pageOptions.some((item) => item.url === selectedPageUrl))) {
@@ -226,7 +235,14 @@ function App() {
   }, [pageOptions, selectedPageUrl]);
 
   const viewedUrl = selectedPageUrl || (!isCurrentPageExcluded ? currentUrl : pageOptions[0]?.url ?? "");
-  const isViewingActivePage = Boolean(viewedUrl && viewedUrl === currentUrl);
+  const isViewingActivePage = Boolean(
+    viewedUrl &&
+    (
+      viewedUrl === currentUrl ||
+      activeFrameContext?.url === viewedUrl && activeFrameContext.topUrl === currentUrl ||
+      annotations.some((item) => item.url === viewedUrl && item.context?.topUrl === currentUrl)
+    )
+  );
   const pageAnnotations = useMemo(
     () =>
       annotations
@@ -248,17 +264,18 @@ function App() {
     [pageAnnotations]
   );
   const selectedCount = selectedIds.length;
+  const canMountContent = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded);
   const canInspect = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded && isViewingActivePage);
 
   useEffect(() => {
-    if (!tab?.id || !canInspect) return;
+    if (!tab?.id || !canMountContent) return;
     void ensureContentScript(tab.id).then(async () => {
-      await enableMonitor();
+      if (canInspect) await enableMonitor();
       setError((current) => (isContentScriptErrorText(current) ? "" : current));
     }).catch(() => {
       // Tool actions surface injection failures. Initial pin rendering can fail silently.
     });
-  }, [canInspect, pageLoadTick, tab?.id]);
+  }, [canInspect, canMountContent, pageLoadTick, tab?.id]);
 
   useEffect(() => {
     setMonitorEvents([]);
@@ -268,6 +285,28 @@ function App() {
 
   useEffect(() => {
     const listener = (message: RuntimeMessage) => {
+      if (message.type === "DOM_AI_PAGE_CONTEXT_SELECTED") {
+        const contextTopUrl = message.context.topUrl || message.context.url;
+        if (contextTopUrl === currentUrl || message.context.url === currentUrl) {
+          setActiveFrameContext(message.context);
+          setSelectedPageUrl(message.context.url);
+          setError("");
+        }
+        return;
+      }
+
+      if (message.type === "DOM_AI_ANNOTATION_SAVED") {
+        const annotationTopUrl = message.annotation.context?.topUrl || message.annotation.url;
+        if (annotationTopUrl === currentUrl || message.annotation.url === currentUrl) {
+          if (message.annotation.context) setActiveFrameContext(message.annotation.context);
+          void refresh().then(() => {
+            setSelectedPageUrl(message.annotation.url);
+            setError("");
+          });
+        }
+        return;
+      }
+
       if (message.type !== "DOM_AI_MONITOR_EVENT") return;
       if (!isSamePageOrigin(message.event.pageUrl, currentUrl)) return;
       setMonitorEvents((items) => [message.event, ...items.filter((item) => item.id !== message.event.id)].slice(0, 800));
@@ -275,7 +314,7 @@ function App() {
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [currentUrl]);
+  }, [currentUrl, refresh]);
 
   useEffect(() => {
     setConfirmClearPage(false);
@@ -770,7 +809,7 @@ function App() {
         </div>
       ) : null}
 
-      <section className="min-h-0 flex-1 overflow-y-auto bg-white">
+      <section className={`min-h-0 flex-1 overflow-y-auto bg-white ${panelMode === "annotations" && pageAnnotations.length ? "scroll-mask-y" : ""}`}>
         {panelMode === "monitor" ? (
           <MonitorPanel
             events={filteredMonitorEvents}
@@ -2072,26 +2111,23 @@ async function sendContentMessage<T = void>(tabId: number, message: unknown): Pr
 
 async function ensureContentScript(tabId: number) {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "DOM_AI_REFRESH_PINS" });
-    return;
+    await injectContentScript(tabId);
   } catch {
-    // The content script is not mounted yet.
+    // Some restricted frames cannot be scripted; the tab may still have usable frames.
   }
-
-  await injectContentScript(tabId);
   await sendTabMessageWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
 }
 
 async function injectContentScript(tabId: number) {
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     func: () => import(chrome.runtime.getURL("content.js"))
   });
 }
 
 async function ensurePageMonitorBridge(tabId: number) {
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     files: ["monitorBridge.js"],
     world: "MAIN"
   });

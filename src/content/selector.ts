@@ -1,4 +1,4 @@
-import type { AnnotationDraft } from "../shared/types";
+import type { AnnotationDraft, PageContext } from "../shared/types";
 
 const STYLE_PROPS = [
   "display",
@@ -39,15 +39,18 @@ const STABLE_SELECTOR_ATTRIBUTES = [
   "alt"
 ];
 
-export function createAnnotationDraft(element: Element, pin?: AnnotationDraft["pin"]): AnnotationDraft {
+const SHADOW_SELECTOR_SEPARATOR = " >>> ";
+
+export function createAnnotationDraft(element: Element, pin?: AnnotationDraft["pin"], context?: PageContext): AnnotationDraft {
   const rect = element.getBoundingClientRect();
   const htmlElement = element as HTMLElement;
 
   return {
-    url: location.href,
-    title: document.title,
+    url: context?.url || location.href,
+    title: context?.title || document.title,
     selector: getCssSelector(element),
     xpath: getXPath(element),
+    context,
     element: {
       tag: element.tagName.toLowerCase(),
       id: htmlElement.id || undefined,
@@ -77,18 +80,54 @@ export function createAnnotationDraft(element: Element, pin?: AnnotationDraft["p
 
 export function getCssSelector(element: Element): string {
   if (!(element instanceof Element)) return "";
-  if (element.id && isUniqueSelector(`#${cssEscape(element.id)}`)) {
+
+  const root = element.getRootNode();
+  if (root instanceof ShadowRoot && root.host instanceof Element) {
+    const hostSelector = getCssSelector(root.host);
+    const innerSelector = getCssSelectorWithinRoot(element, root);
+    return `${hostSelector}${SHADOW_SELECTOR_SEPARATOR}${innerSelector}`;
+  }
+
+  return getCssSelectorWithinRoot(element, document);
+}
+
+export function querySelectorDeep(selector: string, root: ParentNode = document): Element | null {
+  const segments = selector.split(SHADOW_SELECTOR_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+  if (!segments.length) return null;
+
+  let currentRoot: ParentNode | ShadowRoot = root;
+  let currentElement: Element | null = null;
+
+  for (const [index, segment] of segments.entries()) {
+    try {
+      currentElement = currentRoot.querySelector(segment);
+    } catch {
+      return null;
+    }
+
+    if (!currentElement) return null;
+    if (index === segments.length - 1) return currentElement;
+    if (!currentElement.shadowRoot) return null;
+    currentRoot = currentElement.shadowRoot;
+  }
+
+  return currentElement;
+}
+
+function getCssSelectorWithinRoot(element: Element, root: ParentNode): string {
+  if (element.id && isUniqueSelector(`#${cssEscape(element.id)}`, root)) {
     return `#${cssEscape(element.id)}`;
   }
 
-  for (const selector of getStableSelectorCandidates(element)) {
-    if (isUniqueSelector(selector)) return selector;
+  for (const selector of getStableSelectorCandidates(element, root)) {
+    if (isUniqueSelector(selector, root)) return selector;
   }
 
   const parts: string[] = [];
   let current: Element | null = element;
+  const stopElement = root instanceof Document ? root.body : null;
 
-  while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+  while (current && current.nodeType === Node.ELEMENT_NODE && current !== stopElement) {
     let selector = getElementSelectorSegment(current);
     const currentElement = current as HTMLElement;
 
@@ -109,14 +148,15 @@ export function getCssSelector(element: Element): string {
 
     parts.unshift(selector);
     const candidate = parts.join(" > ");
-    if (isUniqueSelector(candidate)) {
+    if (isUniqueSelector(candidate, root)) {
       return candidate;
     }
 
     current = parent;
   }
 
-  return parts.length ? `body > ${parts.join(" > ")}` : "body";
+  if (!parts.length) return root instanceof Document ? "body" : getElementSelectorSegment(element);
+  return root instanceof Document ? `body > ${parts.join(" > ")}` : parts.join(" > ");
 }
 
 function getElementSelectorSegment(element: Element): string {
@@ -132,7 +172,7 @@ function getElementSelectorSegment(element: Element): string {
   return classes.length ? `${tag}.${classes.map(cssEscape).join(".")}` : tag;
 }
 
-function getStableSelectorCandidates(element: Element): string[] {
+function getStableSelectorCandidates(element: Element, root: ParentNode): string[] {
   const tag = element.nodeName.toLowerCase();
   const candidates: string[] = [];
 
@@ -158,6 +198,15 @@ function getStableAttributeSelector(element: Element): string {
 }
 
 function getXPath(element: Element): string {
+  const root = element.getRootNode();
+  if (root instanceof ShadowRoot && root.host instanceof Element) {
+    return `${getXPath(root.host)}/shadow-root/${getXPathWithinRoot(element)}`;
+  }
+
+  return getXPathWithinRoot(element);
+}
+
+function getXPathWithinRoot(element: Element): string {
   if (element.id) {
     return `//*[@id="${element.id}"]`;
   }
@@ -186,9 +235,9 @@ function getComputedStyleSnapshot(element: Element): Record<string, string> {
   return Object.fromEntries(STYLE_PROPS.map((prop) => [prop, styles.getPropertyValue(toKebab(prop)) || styles.getPropertyValue(prop)]));
 }
 
-function isUniqueSelector(selector: string): boolean {
+function isUniqueSelector(selector: string, root: ParentNode = document): boolean {
   try {
-    return document.querySelectorAll(selector).length === 1;
+    return root.querySelectorAll(selector).length === 1;
   } catch {
     return false;
   }

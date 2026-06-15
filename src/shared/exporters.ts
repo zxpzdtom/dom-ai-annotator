@@ -20,6 +20,7 @@ export function exportAnnotationsAsMarkdown(annotations: DomAnnotation[]): strin
       `- 状态: ${statusLabels[normalizeStatus(item.status)]}`,
       `- URL: ${item.url}`,
       `- 页面标题: ${item.title || "未命名页面"}`,
+      item.context ? `- 页面上下文: ${formatPageContext(item)}` : undefined,
       `- Selector: \`${item.selector}\``,
       item.xpath ? `- XPath: \`${item.xpath}\`` : undefined,
       `- 元素: \`${describeElement(item)}\``,
@@ -238,6 +239,17 @@ function describeElement(annotation: DomAnnotation): string {
   const classes = element.className ? `.${element.className.trim().split(/\s+/).slice(0, 4).join(".")}` : "";
   const label = element.ariaLabel || element.role || element.text;
   return `${element.tag}${id}${classes}${label ? ` (${label.slice(0, 80)})` : ""}`;
+}
+
+function formatPageContext(annotation: DomAnnotation): string {
+  const context = annotation.context;
+  if (!context) return "top";
+
+  const parts: string[] = [context.kind];
+  if (context.topUrl && context.topUrl !== annotation.url) parts.push(`top=${context.topUrl}`);
+  if (context.hostUrl && context.hostUrl !== annotation.url) parts.push(`host=${context.hostUrl}`);
+  if (context.frameId !== undefined) parts.push(`frameId=${context.frameId}`);
+  return parts.join("; ");
 }
 
 function formatKeyStyles(annotation: DomAnnotation): string {

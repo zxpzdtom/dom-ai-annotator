@@ -33,6 +33,20 @@ export type ViewportSnapshot = {
   userAgent: string;
 };
 
+export type PageContextKind = "top" | "iframe" | "micro-app" | "wujie";
+
+export type PageContext = {
+  kind: PageContextKind;
+  url: string;
+  title: string;
+  topUrl?: string;
+  topTitle?: string;
+  frameId?: number;
+  parentFrameId?: number;
+  hostSelector?: string;
+  hostUrl?: string;
+};
+
 export type AnnotationScreenshot = {
   dataUrl: string;
   capturedAt: string;
@@ -52,6 +66,7 @@ export type DomAnnotation = {
   updatedAt: string;
   selector: string;
   xpath?: string;
+  context?: PageContext;
   element: ElementSummary;
   rect: ElementRect;
   pin?: AnnotationPinAnchor;
@@ -119,11 +134,16 @@ export type ContentMessage =
   | { type: "DOM_AI_MONITOR_ENABLE" }
   | { type: "DOM_AI_MONITOR_CLEAR" }
   | { type: "DOM_AI_SHOW_IMAGE_PREVIEW"; dataUrl: string }
-  | { type: "DOM_AI_CLOSE_IMAGE_PREVIEW" };
+  | { type: "DOM_AI_CLOSE_IMAGE_PREVIEW" }
+  | { type: "DOM_AI_FRAME_HOVER_ACTIVE"; frameId?: number };
 
 export type RuntimeMessage =
   | ContentMessage
   | { type: "DOM_AI_DRAFT_READY"; draft: AnnotationDraft }
+  | { type: "DOM_AI_PAGE_CONTEXT_SELECTED"; context: PageContext }
+  | { type: "DOM_AI_ANNOTATION_SAVED"; annotation: DomAnnotation }
+  | { type: "DOM_AI_BROADCAST_CONTENT_MESSAGE"; message: ContentMessage }
   | { type: "DOM_AI_OPEN_SIDE_PANEL" }
+  | { type: "DOM_AI_GET_FRAME_CONTEXT" }
   | { type: "DOM_AI_MONITOR_EVENT"; event: MonitorEvent }
   | { type: "DOM_AI_CAPTURE_SCREENSHOT"; rect?: { x: number; y: number; width: number; height: number } };

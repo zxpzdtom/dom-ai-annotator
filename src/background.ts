@@ -1,5 +1,5 @@
 import { isExcludedUrl } from "./shared/excludedUrls";
-import type { RuntimeMessage } from "./shared/types";
+import type { PageContext, RuntimeMessage } from "./shared/types";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -35,6 +35,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   const enabled = await syncTabSidePanel(tab.id, tab.url);
   if (!enabled) return;
   await chrome.sidePanel.open({ tabId: tab.id });
+  void sendContentMessage(tab.id, { type: "DOM_AI_REFRESH_PINS" });
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
@@ -50,6 +51,20 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message.type === "DOM_AI_GET_FRAME_CONTEXT") {
+    const context: PageContext = {
+      kind: sender.frameId && sender.frameId > 0 ? "iframe" : "top",
+      url: sender.url || "",
+      title: sender.frameId && sender.frameId > 0 ? sender.url || "" : sender.tab?.title || "",
+      topUrl: sender.tab?.url || sender.url || "",
+      topTitle: sender.tab?.title || "",
+      frameId: sender.frameId,
+      parentFrameId: (sender as chrome.runtime.MessageSender & { parentFrameId?: number }).parentFrameId
+    };
+    sendResponse(context);
+    return;
+  }
+
   if (message.type === "DOM_AI_OPEN_SIDE_PANEL") {
     const tabId = sender.tab?.id;
     const url = sender.tab?.url ?? "";
@@ -57,6 +72,23 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     void syncTabSidePanel(tabId, url).then((enabled) => {
       if (enabled) void chrome.sidePanel.open({ tabId });
     });
+    return;
+  }
+
+  if (message.type === "DOM_AI_FRAME_HOVER_ACTIVE") {
+    const tabId = sender.tab?.id;
+    if (!tabId) return;
+    void chrome.tabs.sendMessage(tabId, {
+      type: "DOM_AI_FRAME_HOVER_ACTIVE",
+      frameId: sender.frameId
+    }).catch(() => undefined);
+    return;
+  }
+
+  if (message.type === "DOM_AI_BROADCAST_CONTENT_MESSAGE") {
+    const tabId = sender.tab?.id;
+    if (!tabId) return;
+    void sendContentMessage(tabId, message.message);
     return;
   }
 
@@ -117,6 +149,12 @@ async function syncTabSidePanel(tabId: number, url?: string): Promise<boolean> {
 
 async function sendContentMessage(tabId: number, message: unknown) {
   try {
+    await injectContentScript(tabId);
+  } catch {
+    // Some frames may be restricted; still try to message frames that are available.
+  }
+
+  try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch {
     await injectContentScript(tabId);
@@ -126,7 +164,7 @@ async function sendContentMessage(tabId: number, message: unknown) {
 
 async function injectContentScript(tabId: number) {
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     func: () => import(chrome.runtime.getURL("content.js"))
   });
 }
@@ -134,7 +172,7 @@ async function injectContentScript(tabId: number) {
 async function ensureTabMonitor(tabId: number) {
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       files: ["monitorBridge.js"],
       world: "MAIN"
     });
@@ -147,7 +185,7 @@ async function ensureTabMonitor(tabId: number) {
 async function ensureAgentBridgeHost(tabId: number) {
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       files: ["agentBridgeHost.js"]
     });
   } catch {

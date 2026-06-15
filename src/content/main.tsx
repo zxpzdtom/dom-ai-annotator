@@ -1,17 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Ban, Check, Clipboard, Filter, MessageCircle, Network, Ruler, TerminalSquare, Trash2, Type, X } from "lucide-react";
+import { ChevronDown, Code2, MessageCircle, Palette, Ruler, Trash2, Type, X } from "lucide-react";
 import cssText from "./content.css?inline";
-import { createAnnotationDraft, getCssSelector } from "./selector";
+import { createAnnotationDraft, getCssSelector, querySelectorDeep } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationPinAnchor, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot } from "../shared/types";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { writeClipboardText } from "../shared/clipboard";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 430;
-const COMPOSER_ESTIMATED_HEIGHT = 560;
+const COMPOSER_ESTIMATED_HEIGHT = 400;
 const COMPOSER_MIN_VISIBLE_HEIGHT = 360;
 const EDGE_GAP = 16;
 const PIN_COLLAPSED_WIDTH = 44;
@@ -108,15 +108,35 @@ type DocumentSize = {
 
 type ColorMode = "rgb" | "hex" | "hsl";
 
-declare global {
-  interface Window {
-    __DOM_AI_OPEN_MONITOR_REQUESTED__?: boolean;
-  }
-}
-
 let monitorEnabled = false;
 let monitorEvents: MonitorEvent[] = [];
 let monitorBridgeInjected = false;
+let framePageContextPromise: Promise<PageContext> | null = null;
+
+function getFallbackPageContext(): PageContext {
+  return {
+    kind: isEmbeddedFrameWindow() ? "iframe" : "top",
+    url: location.href,
+    title: document.title,
+    topUrl: isEmbeddedFrameWindow() ? document.referrer || undefined : location.href,
+    topTitle: isEmbeddedFrameWindow() ? undefined : document.title
+  };
+}
+
+async function getFramePageContext(): Promise<PageContext> {
+  if (!framePageContextPromise) {
+    framePageContextPromise = chrome.runtime.sendMessage({ type: "DOM_AI_GET_FRAME_CONTEXT" })
+      .then((context: PageContext | undefined) => ({
+        ...getFallbackPageContext(),
+        ...context,
+        kind: context?.kind ?? (isEmbeddedFrameWindow() ? "iframe" : "top"),
+        url: context?.url || location.href,
+        title: context?.title || document.title
+      }))
+      .catch(() => getFallbackPageContext());
+  }
+  return framePageContextPromise;
+}
 
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
@@ -182,37 +202,21 @@ function App() {
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null);
   const [documentSize, setDocumentSize] = useState<DocumentSize>(() => getDocumentSize());
   const [viewportOffset, setViewportOffset] = useState<ViewportOffset>(() => ({ x: window.scrollX, y: window.scrollY }));
-  const [monitorOpen, setMonitorOpen] = useState(() => Boolean(window.__DOM_AI_OPEN_MONITOR_REQUESTED__));
-  const [monitorView, setMonitorView] = useState<"console" | "network">("console");
-  const [monitorItems, setMonitorItems] = useState<MonitorEvent[]>(() => monitorEvents);
-  const [monitorSelectedIds, setMonitorSelectedIds] = useState<string[]>([]);
-  const [monitorSearch, setMonitorSearch] = useState("");
+  const [pageContext, setPageContext] = useState<PageContext>(() => getFallbackPageContext());
+  const [toolbarDismissed, setToolbarDismissed] = useState(false);
+  const showFrameToolbar = !isEmbeddedFrameWindow();
   const focusTimerRef = useRef<number | null>(null);
+  const lastFrameHoverSignalRef = useRef(0);
 
   useEffect(() => {
     enableMonitor();
-    setMonitorItems(getMonitorSnapshot().events);
-    const listener = (event: Event) => {
-      const item = (event as CustomEvent<MonitorEvent>).detail;
-      setMonitorItems((items) => [item, ...items.filter((existing) => existing.id !== item.id)].slice(0, MAX_MONITOR_EVENTS));
-    };
-    window.addEventListener(MONITOR_EVENT_NAME, listener);
-    return () => window.removeEventListener(MONITOR_EVENT_NAME, listener);
-  }, []);
-
-  useEffect(() => {
-    const openMonitor = () => {
-      window.__DOM_AI_OPEN_MONITOR_REQUESTED__ = true;
-      setMonitorOpen(true);
-    };
-    window.addEventListener("DOM_AI_OPEN_MONITOR", openMonitor);
-    return () => window.removeEventListener("DOM_AI_OPEN_MONITOR", openMonitor);
+    void getFramePageContext().then(setPageContext);
   }, []);
 
   const refreshAnnotations = useCallback(async () => {
     const items = await getAnnotations();
-    setAnnotations(items.filter((item) => item.url === location.href));
-  }, []);
+    setAnnotations(items.filter((item) => isAnnotationForCurrentDocument(item, pageContext)));
+  }, [pageContext]);
 
   useEffect(() => {
     void refreshAnnotations();
@@ -248,7 +252,6 @@ function App() {
         setMeasureAnchor(null);
         setMeasureHover(null);
         setMeasurePaused(false);
-        setPinnedMeasurements([]);
         setPicking(true);
       }
       if (message.type === "DOM_AI_STOP_PICKING") {
@@ -262,7 +265,6 @@ function App() {
         setMeasureAnchor(null);
         setMeasureHover(null);
         setMeasurePaused(false);
-        setPinnedMeasurements([]);
         setMeasuring(true);
       }
       if (message.type === "DOM_AI_STOP_MEASURING") {
@@ -270,7 +272,10 @@ function App() {
         setMeasureAnchor(null);
         setMeasureHover(null);
         setMeasurePaused(false);
-        setPinnedMeasurements([]);
+      }
+      if (message.type === "DOM_AI_FRAME_HOVER_ACTIVE" && message.frameId !== pageContext.frameId) {
+        setHoverInspection(null);
+        setMeasureHover(null);
       }
       if (message.type === "DOM_AI_REFRESH_PINS") void refreshAnnotations();
       if (message.type === "DOM_AI_FOCUS_ANNOTATION") focusAndHighlightAnnotation(message.id, annotations);
@@ -313,58 +318,27 @@ function App() {
       if (event.key.toLowerCase() === "c" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         event.stopPropagation();
-        setComposer(null);
-        setResumePickingAfterComposer(false);
-        setMeasuring(false);
-        setMeasurePaused(false);
-        setPinnedMeasurements([]);
-        setPicking(true);
+        requestPickingMode();
         return;
       }
 
       if (event.key.toLowerCase() === "m" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         event.stopPropagation();
-        setComposer(null);
-        setResumePickingAfterComposer(false);
-        setPicking(false);
-        if (isMeasuring) {
-          setMeasureAnchor(null);
-          setMeasureHover(null);
-          setMeasurePaused(false);
-          return;
-        }
-        setMeasureAnchor(null);
-        setMeasureHover(null);
-        setMeasurePaused(false);
-        setPinnedMeasurements([]);
-        setMeasuring(true);
+        requestMeasuringMode();
         return;
       }
 
       if (event.key === "Escape" && (isPicking || isMeasuring)) {
         event.preventDefault();
         event.stopPropagation();
-        if (isMeasuring && (measurePaused || (!measureAnchor && !measureHover && !pinnedMeasurements.length))) {
-          setMeasuring(false);
-          setMeasurePaused(false);
-          setPinnedMeasurements([]);
-          return;
-        }
-        if (isMeasuring) {
-          setMeasureAnchor(null);
-          setMeasureHover(null);
-          setMeasurePaused(true);
-          return;
-        }
-        setPicking(false);
-        setResumePickingAfterComposer(false);
+        requestStopCurrentMode();
       }
     };
 
     window.addEventListener("keydown", onToolShortcut, true);
     return () => window.removeEventListener("keydown", onToolShortcut, true);
-  }, [isMeasuring, isPicking, measureAnchor, measureHover, measurePaused, pinnedMeasurements.length]);
+  }, [isMeasuring, isPicking, measureAnchor, measureHover, measurePaused]);
 
   useEffect(() => {
     if (!isPicking) {
@@ -374,25 +348,39 @@ function App() {
 
     const onMove = (event: MouseEvent) => {
       if (measurePaused) return;
+      notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
       const element = getTargetElement(event);
       if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setHoverInspection(null);
+        return;
+      }
       setDocumentSize(getDocumentSize());
       setHoverInspection(getElementInspection(element));
     };
 
-    const onClick = async (event: MouseEvent) => {
+    const onPointerDown = async (event: PointerEvent) => {
       if (measurePaused) return;
+      if (!isPrimaryPointerSelection(event)) return;
+      if (isInjectedEvent(event)) return;
       const element = getTargetElement(event);
       if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setHoverInspection(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
+      suppressNextPageClick();
       setResumePickingAfterComposer(true);
       setPicking(false);
       const inspection = getElementInspection(element);
+      const context = getAnnotationPageContext(element, await getFramePageContext());
+      void chrome.runtime.sendMessage({ type: "DOM_AI_PAGE_CONTEXT_SELECTED", context });
       const draft = createAnnotationDraft(element, getPreferredAnnotationPinAnchor(inspection, {
         x: event.clientX + window.scrollX,
         y: event.clientY + window.scrollY
-      }));
+      }), context);
       const initialScreenshot = await captureAnnotationScreenshotData(draft.selector, draft.rect);
       setComposer({
         draft,
@@ -401,21 +389,34 @@ function App() {
       });
     };
 
+    const onClick = (event: MouseEvent) => {
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const onOut = (event: MouseEvent) => {
+      if (isPointerLeavingForEmbeddedContent(event)) setHoverInspection(null);
+    };
+
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      setPicking(false);
-      setResumePickingAfterComposer(false);
+      requestStopCurrentMode();
     };
 
     document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseout", onOut, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("keydown", onKey, true);
 
     return () => {
       document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseout", onOut, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keydown", onKey, true);
@@ -430,17 +431,29 @@ function App() {
     }
 
     const onMove = (event: MouseEvent) => {
+      notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
       const element = getTargetElement(event);
       if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setMeasureHover(null);
+        return;
+      }
       setDocumentSize(getDocumentSize());
       setMeasureHover(getElementInspection(element));
     };
 
-    const onClick = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!isPrimaryPointerSelection(event)) return;
+      if (isInjectedEvent(event)) return;
       const element = getTargetElement(event);
       if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setMeasureHover(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
+      suppressNextPageClick();
       const inspection = getElementInspection(element);
       setMeasureHover(inspection);
 
@@ -460,33 +473,39 @@ function App() {
       });
     };
 
+    const onClick = (event: MouseEvent) => {
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const onOut = (event: MouseEvent) => {
+      if (isPointerLeavingForEmbeddedContent(event)) setMeasureHover(null);
+    };
+
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      if (measurePaused || (!measureAnchor && !measureHover && !pinnedMeasurements.length)) {
-        setMeasuring(false);
-        setMeasurePaused(false);
-        setPinnedMeasurements([]);
-        return;
-      }
-      setMeasureAnchor(null);
-      setMeasureHover(null);
-      setMeasurePaused(true);
+      requestStopCurrentMode();
     };
 
     document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseout", onOut, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("keydown", onKey, true);
 
     return () => {
       document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseout", onOut, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [isMeasuring, measureAnchor, measureHover, measurePaused, pinnedMeasurements.length]);
+  }, [isMeasuring, measureAnchor, measureHover, measurePaused]);
 
   const sortedAnnotations = useMemo(
     () => [...annotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -518,7 +537,6 @@ function App() {
     setMeasureAnchor(null);
     setMeasureHover(null);
     setMeasurePaused(false);
-    setPinnedMeasurements([]);
     focusAnnotation(id, items);
     setComposer({
       draft: getAnnotationDraft(annotation),
@@ -555,6 +573,23 @@ function App() {
     startMeasuringMode();
   }
 
+  function broadcastContentMessage(message: ContentMessage, fallback: () => void) {
+    void chrome.runtime.sendMessage({ type: "DOM_AI_BROADCAST_CONTENT_MESSAGE", message }).catch(fallback);
+  }
+
+  function requestPickingMode() {
+    broadcastContentMessage({ type: "DOM_AI_START_PICKING" }, startPickingMode);
+  }
+
+  function requestMeasuringMode() {
+    broadcastContentMessage({ type: "DOM_AI_START_MEASURING" }, startMeasuringMode);
+  }
+
+  function requestStopCurrentMode() {
+    const message: ContentMessage = { type: isMeasuring ? "DOM_AI_STOP_MEASURING" : "DOM_AI_STOP_PICKING" };
+    broadcastContentMessage(message, stopCurrentMode);
+  }
+
   function stopCurrentMode() {
     setPicking(false);
     setResumePickingAfterComposer(false);
@@ -562,31 +597,6 @@ function App() {
     setMeasureAnchor(null);
     setMeasureHover(null);
     setMeasurePaused(false);
-  }
-
-  function openSidePanel() {
-    void chrome.runtime.sendMessage({ type: "DOM_AI_OPEN_SIDE_PANEL" });
-  }
-
-  const filteredMonitorItems = useMemo(
-    () => monitorItems.filter((item) => item.pageUrl === location.href).filter((item) => matchesMonitorSearch(item, monitorSearch)),
-    [monitorItems, monitorSearch]
-  );
-  const visibleMonitorItems = useMemo(
-    () => filteredMonitorItems.filter((item) => (monitorView === "network" ? item.kind === "network" : item.kind !== "network")),
-    [filteredMonitorItems, monitorView]
-  );
-  const monitorAlertCount = useMemo(() => monitorItems.filter(isMonitorAlert).length, [monitorItems]);
-
-  function toggleMonitorSelected(id: string) {
-    setMonitorSelectedIds((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
-  }
-
-  async function copyMonitorItems() {
-    const selected = monitorItems.filter((item) => monitorSelectedIds.includes(item.id));
-    const items = selected.length ? selected : monitorItems.filter(isMonitorAlert);
-    if (!items.length) return;
-    await writeClipboardText(exportMonitorEventsAsMarkdown(items));
   }
 
   return (
@@ -615,8 +625,14 @@ function App() {
           </>
         ) : null}
 
-        {isMeasuring ? (
-          <MeasureLayer anchor={measurePaused ? null : measureAnchor} hover={measurePaused ? null : measureHover} pinnedMeasurements={pinnedMeasurements} />
+        {isMeasuring || pinnedMeasurements.length ? (
+          <MeasureLayer
+            anchor={isMeasuring && !measurePaused ? measureAnchor : null}
+            hover={isMeasuring && !measurePaused ? measureHover : null}
+            pinnedMeasurements={pinnedMeasurements}
+            removable={!isMeasuring}
+            onRemovePinned={(key) => setPinnedMeasurements((items) => items.filter((item) => item.key !== key))}
+          />
         ) : null}
 
         {focusedAnnotationId ? (
@@ -667,39 +683,15 @@ function App() {
         }} /> : null}
       </div>
 
-      <FloatingToolBar
+      {showFrameToolbar ? <FloatingToolBar
         isPicking={isPicking}
         isMeasuring={isMeasuring}
-        onPick={startPickingMode}
-        onMeasure={toggleMeasuringMode}
-        onOpenPanel={openSidePanel}
-        onOpenMonitor={() => setMonitorOpen(true)}
-        monitorAlertCount={monitorAlertCount}
-        onCancel={stopCurrentMode}
-      />
-
-      <MiniDevTools
-        open={monitorOpen}
-        view={monitorView}
-        events={visibleMonitorItems}
-        allEvents={monitorItems}
-        selectedIds={monitorSelectedIds}
-        search={monitorSearch}
-        alertCount={monitorAlertCount}
-        onOpenChange={setMonitorOpen}
-        onViewChange={setMonitorView}
-        onSearchChange={setMonitorSearch}
-        onToggleSelected={toggleMonitorSelected}
-        onClear={() => {
-          clearMonitor();
-          setMonitorItems([]);
-          setMonitorSelectedIds([]);
-        }}
-        onCopy={() => void copyMonitorItems()}
-        onSelectAll={() => setMonitorSelectedIds(visibleMonitorItems.map((item) => item.id))}
-        onClearSelection={() => setMonitorSelectedIds([])}
-      />
-
+        hidden={toolbarDismissed}
+        onPick={requestPickingMode}
+        onMeasure={requestMeasuringMode}
+        onDismiss={() => setToolbarDismissed(true)}
+        onCancel={requestStopCurrentMode}
+      /> : null}
     </div>
   );
 }
@@ -861,20 +853,18 @@ function formatRelativeTime(value: string) {
 function FloatingToolBar({
   isPicking,
   isMeasuring,
+  hidden,
   onPick,
   onMeasure,
-  onOpenPanel,
-  onOpenMonitor,
-  monitorAlertCount,
+  onDismiss,
   onCancel
 }: {
   isPicking: boolean;
   isMeasuring: boolean;
+  hidden: boolean;
   onPick: () => void;
   onMeasure: () => void;
-  onOpenPanel: () => void;
-  onOpenMonitor: () => void;
-  monitorAlertCount: number;
+  onDismiss: () => void;
   onCancel: () => void;
 }) {
   if (isPicking || isMeasuring) {
@@ -892,11 +882,13 @@ function FloatingToolBar({
     );
   }
 
+  if (hidden) return null;
+
   return (
-    <div className="dom-ai-tool-bar dom-ai-scroll-mask-x dom-ai-interactive">
+    <div className="dom-ai-tool-bar dom-ai-interactive">
       <button
         type="button"
-        className={`dom-ai-tool-button dom-ai-tool-button-primary ${isPicking ? "dom-ai-tool-button-active" : ""}`}
+        className="dom-ai-tool-button dom-ai-tool-button-primary"
         onClick={onPick}
       >
         <ReviewCursorIcon />
@@ -905,22 +897,15 @@ function FloatingToolBar({
       </button>
       <button
         type="button"
-        className={`dom-ai-tool-button ${isMeasuring ? "dom-ai-tool-button-active" : ""}`}
+        className="dom-ai-tool-button dom-ai-tool-button-measure"
         onClick={onMeasure}
       >
         <Ruler size={15} />
         <span>测量</span>
         <kbd>M</kbd>
       </button>
-      <span className="dom-ai-tool-divider" />
-      <button type="button" className="dom-ai-tool-button dom-ai-tool-button-monitor" onClick={onOpenMonitor}>
-        <TerminalSquare size={15} />
-        <span>Monitor</span>
-        {monitorAlertCount ? <b>{monitorAlertCount}</b> : null}
-      </button>
-      <button type="button" className="dom-ai-tool-button dom-ai-tool-button-muted" onClick={onOpenPanel}>
-        <kbd>⌥⇧C</kbd>
-        <span>打开扩展</span>
+      <button type="button" className="dom-ai-tool-dismiss" aria-label="隐藏工具条" title="隐藏工具条" onClick={onDismiss}>
+        <X size={14} />
       </button>
     </div>
   );
@@ -932,232 +917,6 @@ function ReviewCursorIcon() {
       <path d="M3 3l7 17 2-7 7-2z" />
     </svg>
   );
-}
-
-function MiniDevTools({
-  open,
-  view,
-  events,
-  allEvents,
-  selectedIds,
-  search,
-  alertCount,
-  onOpenChange,
-  onViewChange,
-  onSearchChange,
-  onToggleSelected,
-  onClear,
-  onCopy,
-  onSelectAll,
-  onClearSelection
-}: {
-  open: boolean;
-  view: "console" | "network";
-  events: MonitorEvent[];
-  allEvents: MonitorEvent[];
-  selectedIds: string[];
-  search: string;
-  alertCount: number;
-  onOpenChange: (open: boolean) => void;
-  onViewChange: (view: "console" | "network") => void;
-  onSearchChange: (search: string) => void;
-  onToggleSelected: (id: string) => void;
-  onClear: () => void;
-  onCopy: () => void;
-  onSelectAll: () => void;
-  onClearSelection: () => void;
-}) {
-  const selectedNetworkEvent = view === "network" ? events.find((event) => selectedIds.includes(event.id)) : undefined;
-  const consoleCount = allEvents.filter((event) => event.kind !== "network").length;
-  const networkCount = allEvents.filter((event) => event.kind === "network").length;
-
-  if (!open) {
-    return (
-      <button type="button" className="dom-ai-devtools-launcher dom-ai-interactive" onClick={() => onOpenChange(true)}>
-        <TerminalSquare size={16} />
-        <span>Monitor</span>
-        {alertCount ? <b>{alertCount}</b> : null}
-      </button>
-    );
-  }
-
-  return (
-    <section className="dom-ai-devtools dom-ai-interactive" aria-label="DOM Review DevTools">
-      <header className="dom-ai-devtools-tabs">
-        <button type="button" className={view === "console" ? "dom-ai-devtools-tab-active" : ""} onClick={() => onViewChange("console")}>
-          Console <span>{consoleCount}</span>
-        </button>
-        <button type="button" className={view === "network" ? "dom-ai-devtools-tab-active" : ""} onClick={() => onViewChange("network")}>
-          Network <span>{networkCount}</span>
-        </button>
-        <button type="button" className="dom-ai-devtools-close" onClick={() => onOpenChange(false)} aria-label="关闭监控面板">
-          <X size={17} />
-        </button>
-      </header>
-      <div className="dom-ai-devtools-toolbar">
-        <button type="button" className="dom-ai-devtools-icon-button dom-ai-devtools-danger" onClick={onClear} title="Clear">
-          <Ban size={16} />
-        </button>
-        <button type="button" className="dom-ai-devtools-icon-button" onClick={selectedIds.length ? onClearSelection : onSelectAll} title="Select visible">
-          <Check size={16} />
-        </button>
-        <button type="button" className="dom-ai-devtools-icon-button" onClick={onCopy} title="Copy selected to AI">
-          <Clipboard size={16} />
-        </button>
-        <div className="dom-ai-devtools-filter">
-          <Filter size={14} />
-          <input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Filter" />
-        </div>
-        <span className="dom-ai-devtools-count">{selectedIds.length ? `${selectedIds.length} selected` : `${events.length} visible`}</span>
-      </div>
-      <div className="dom-ai-devtools-body">
-        {view === "console" ? (
-          <ConsolePane events={events.filter((event) => event.kind !== "network")} selectedIds={selectedIds} onToggleSelected={onToggleSelected} />
-        ) : (
-          <>
-            <NetworkPane events={events.filter((event) => event.kind === "network")} selectedIds={selectedIds} onToggleSelected={onToggleSelected} />
-            {selectedNetworkEvent ? <NetworkInspector event={selectedNetworkEvent} /> : null}
-          </>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ConsolePane({ events, selectedIds, onToggleSelected }: { events: MonitorEvent[]; selectedIds: string[]; onToggleSelected: (id: string) => void }) {
-  if (!events.length) return <div className="dom-ai-devtools-empty">No console messages</div>;
-  return (
-    <div className="dom-ai-console-pane">
-      {events.map((event) => (
-        <button key={event.id} type="button" className={`dom-ai-console-row dom-ai-console-row-${getMonitorToneName(event)} ${selectedIds.includes(event.id) ? "dom-ai-devtools-row-selected" : ""}`} onClick={() => onToggleSelected(event.id)}>
-          <span>{event.severity === "warn" || event.severity === "error" || event.kind === "error" ? <AlertTriangle size={15} /> : "›"}</span>
-          <code>{event.message}</code>
-          {event.details || event.stack ? <pre>{event.details || event.stack}</pre> : null}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function NetworkPane({ events, selectedIds, onToggleSelected }: { events: MonitorEvent[]; selectedIds: string[]; onToggleSelected: (id: string) => void }) {
-  if (!events.length) return <div className="dom-ai-devtools-empty">No network requests</div>;
-  return (
-    <div className="dom-ai-network-pane">
-      <div className="dom-ai-network-head">
-        <span>Name</span>
-        <span>Status</span>
-        <span>Type</span>
-        <span>Method</span>
-        <span>Time</span>
-      </div>
-      {events.map((event) => (
-        <button key={event.id} type="button" className={`dom-ai-network-row ${selectedIds.includes(event.id) ? "dom-ai-devtools-row-selected" : ""}`} onClick={() => onToggleSelected(event.id)}>
-          <span>{getNetworkName(event.message)}</span>
-          <span className={event.ok === false ? "dom-ai-network-bad" : ""}>{event.status ?? "failed"}</span>
-          <span>{event.responseType || event.requestType || "fetch"}</span>
-          <span>{event.method || "GET"}</span>
-          <span>{event.durationMs ?? 0} ms</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function NetworkInspector({ event }: { event: MonitorEvent }) {
-  return (
-    <aside className="dom-ai-network-inspector">
-      <div className="dom-ai-network-inspector-tabs">
-        <span>Headers</span>
-        <span className="dom-ai-network-inspector-active">Preview</span>
-        <span>Response</span>
-        <span>Payload</span>
-      </div>
-      <div className="dom-ai-network-inspector-body">
-        <InspectorBlock title="General" rows={{
-          "Request URL": event.message.replace(/^\S+\s+/, ""),
-          "Request Method": event.method || "GET",
-          "Status Code": event.status ? `${event.status} ${event.statusText || ""}` : "failed",
-          "Duration": `${event.durationMs ?? 0} ms`
-        }} />
-        <InspectorBlock title="Request Headers" rows={event.requestHeaders || {}} />
-        {event.requestBody ? <InspectorText title="Payload" value={event.requestBody} /> : null}
-        <InspectorBlock title="Response Headers" rows={event.responseHeaders || {}} />
-        {event.responseBody ? <InspectorText title="Response" value={event.responseBody} /> : null}
-      </div>
-    </aside>
-  );
-}
-
-function InspectorBlock({ title, rows }: { title: string; rows: Record<string, string> }) {
-  const entries = Object.entries(rows);
-  if (!entries.length) return null;
-  return (
-    <section className="dom-ai-inspector-block">
-      <h3>{title}</h3>
-      {entries.map(([key, value]) => (
-        <p key={key}><b>{key}:</b> <span>{value}</span></p>
-      ))}
-    </section>
-  );
-}
-
-function InspectorText({ title, value }: { title: string; value: string }) {
-  return (
-    <section className="dom-ai-inspector-block">
-      <h3>{title}</h3>
-      <pre>{formatJsonLike(value)}</pre>
-    </section>
-  );
-}
-
-function getMonitorToneName(event: MonitorEvent) {
-  if (event.severity === "error" || event.kind === "error" || event.ok === false) return "error";
-  if (event.severity === "warn") return "warn";
-  return "info";
-}
-
-function isMonitorAlert(event: MonitorEvent) {
-  return event.severity === "warn" || event.severity === "error" || event.kind === "error" || event.ok === false;
-}
-
-function matchesMonitorSearch(event: MonitorEvent, search: string) {
-  const query = search.trim().toLowerCase();
-  if (!query) return true;
-  return [event.message, event.details, event.stack, event.requestBody, event.responseBody, event.statusText]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(query));
-}
-
-function getNetworkName(message: string) {
-  const url = message.replace(/^\S+\s+/, "");
-  try {
-    const parsed = new URL(url);
-    return parsed.pathname.split("/").filter(Boolean).pop() || parsed.hostname;
-  } catch {
-    return url;
-  }
-}
-
-function formatJsonLike(value: string) {
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
-}
-
-function exportMonitorEventsAsMarkdown(events: MonitorEvent[]) {
-  return [
-    "# Runtime context for AI",
-    "",
-    ...events.map((event, index) => [
-      `## ${index + 1}. ${event.kind.toUpperCase()} ${event.method || ""} ${event.status ?? ""}`.trim(),
-      `- URL: ${event.message.replace(/^\S+\s+/, "")}`,
-      event.requestBody ? `- Request body:\n\n\`\`\`text\n${event.requestBody}\n\`\`\`` : "",
-      event.responseBody ? `- Response body:\n\n\`\`\`text\n${event.responseBody}\n\`\`\`` : "",
-      event.details ? `- Details: ${event.details}` : ""
-    ].filter(Boolean).join("\n\n"))
-  ].join("\n");
 }
 
 type AnnotationPinPosition = {
@@ -1254,7 +1013,7 @@ function getPreferredAnnotationPinCandidateFromRect(rect: HoverInspection["docum
 
 function getAnnotationLivePinAnchor(annotation: DomAnnotation, liveRect: HoverInspection["documentRect"]): AnnotationPinAnchor | undefined {
   if (!annotation.pin) return undefined;
-  if (!document.querySelector(annotation.selector)) return annotation.pin;
+  if (!getAnnotationElement(annotation)) return annotation.pin;
 
   const savedRect = getSavedAnnotationDocumentRect(annotation);
   const savedCandidate = inferPinCandidateFromPoint(savedRect, annotation.pin);
@@ -1373,7 +1132,7 @@ function Composer({
 
     const now = new Date().toISOString();
     const newId = crypto.randomUUID();
-    await saveAnnotation({
+    const annotation: DomAnnotation = {
       ...state.draft,
       id: newId,
       createdAt: now,
@@ -1385,10 +1144,12 @@ function Composer({
         severity
       },
       status: "pending"
-    });
+    };
+    await saveAnnotation(annotation);
     if (state.initialScreenshot) {
       await updateAnnotationScreenshot(newId, "screenshot", state.initialScreenshot);
     }
+    void chrome.runtime.sendMessage({ type: "DOM_AI_ANNOTATION_SAVED", annotation });
     onSaved();
   }, [canSave, comment, onSaved, severity, state.draft, state.editingAnnotation, state.initialScreenshot]);
 
@@ -1438,7 +1199,7 @@ function Composer({
         top: position.top
       }}
     >
-      <div className="rounded-xl bg-ink-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.06)]">
+      <div className="px-1 pb-1.5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1450,7 +1211,7 @@ function Composer({
             <div className="mt-1 max-w-[330px] truncate font-mono text-[11px] text-ink-500">{state.draft.selector}</div>
           </div>
           <button
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-white hover:text-ink-900 active:scale-[0.96]"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-900 active:scale-[0.96]"
             aria-label="关闭编辑框"
             onClick={onCancel}
           >
@@ -1459,55 +1220,56 @@ function Composer({
         </div>
       </div>
 
-      <ElementDetails inspection={state.inspection} colorMode={colorMode} onColorModeChange={setColorMode} />
+      <div className="px-0.5 pb-1">
+        <ElementDetails inspection={state.inspection} colorMode={colorMode} onColorModeChange={setColorMode} />
 
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <label className="text-xs font-bold text-ink-700" htmlFor="dom-ai-comment">
-          评论内容
-        </label>
-        <span className="text-[11px] font-semibold text-ink-400">⌘/Ctrl + Enter 保存，Enter 换行，Esc 取消</span>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <label className="text-xs font-bold text-ink-700" htmlFor="dom-ai-comment">
+            评论内容
+          </label>
+        </div>
+        <textarea
+          id="dom-ai-comment"
+          className="mt-1 min-h-[76px] w-full resize-none rounded-xl bg-white px-3 py-2.5 text-sm leading-5 text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] outline-none transition-shadow duration-150 placeholder:text-ink-500 focus:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.45)]"
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (!isSaveKeyboardShortcut(event)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void save();
+          }}
+          placeholder="例如：移动端 CTA 按钮距离标题太近。"
+          autoFocus
+        />
+
+        <div className="mt-2.5">
+          <PriorityControl value={severity} onChange={setSeverity} />
+        </div>
       </div>
-      <textarea
-        id="dom-ai-comment"
-        className="mt-1 min-h-[118px] w-full resize-none rounded-xl bg-white px-3 py-2.5 text-sm leading-5 text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] outline-none transition-shadow duration-150 placeholder:text-ink-500 focus:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.45)]"
-        value={comment}
-        onChange={(event) => setComment(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return;
-          if (!isSaveKeyboardShortcut(event)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          void save();
-        }}
-        placeholder="例如：移动端 CTA 按钮距离标题太近。"
-        autoFocus
-      />
 
-      <div className="mt-2.5">
-        <PriorityControl value={severity} onChange={setSeverity} />
-      </div>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
+      <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-ink-100 pt-1.5">
         {state.editingAnnotation ? (
           <button
-            className={`inline-flex h-[34px] items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
+            className={`inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
               confirmDelete ? "bg-red-50 text-red-700 shadow-[inset_0_0_0_1px_rgba(185,28,28,0.18)] hover:bg-red-100" : "bg-white text-ink-500 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] hover:bg-ink-50 hover:text-red-700"
             }`}
             onClick={() => void remove()}
           >
-            <Trash2 size={14} />
+            <Trash2 size={13} />
             {confirmDelete ? "确认删除" : "删除"}
           </button>
         ) : <span />}
         <div className="flex justify-end gap-2">
           <button
-            className="inline-flex h-[34px] items-center justify-center rounded-lg bg-white px-2.5 text-xs font-semibold text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+            className="inline-flex h-7 items-center justify-center rounded-md bg-white px-2 text-[11px] font-semibold text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
             onClick={onCancel}
           >
             取消
           </button>
           <button
-            className="inline-flex h-[34px] items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-2.5 text-xs font-semibold text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
+            className="inline-flex h-7 items-center justify-center gap-1 rounded-md bg-brand-600 px-2 text-[11px] font-semibold text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
             disabled={!canSave}
             onClick={() => void save()}
             title="Cmd/Ctrl + Enter"
@@ -1531,11 +1293,15 @@ function getAnnotationTargetLabel(annotation: DomAnnotation): string {
 function MeasureLayer({
   anchor,
   hover,
-  pinnedMeasurements
+  pinnedMeasurements,
+  removable,
+  onRemovePinned
 }: {
   anchor: HoverInspection | null;
   hover: HoverInspection | null;
   pinnedMeasurements: PinnedMeasurement[];
+  removable: boolean;
+  onRemovePinned: (key: string) => void;
 }) {
   const liveAnchor = anchor ? getLiveInspection(anchor) : null;
   const liveHover = hover ? getLiveInspection(hover) : null;
@@ -1546,7 +1312,7 @@ function MeasureLayer({
   return (
     <>
       {pinnedMeasurements.map((item) => (
-        <MeasurementPair key={item.key} pair={item} />
+        <MeasurementPair key={item.key} pair={item} removable={removable} onRemove={() => onRemovePinned(item.key)} />
       ))}
       {liveAnchor ? (
         <div
@@ -1585,14 +1351,14 @@ function MeasureLayer({
   );
 }
 
-function MeasurementPair({ pair }: { pair: PinnedMeasurement }) {
+function MeasurementPair({ pair, removable, onRemove }: { pair: PinnedMeasurement; removable: boolean; onRemove: () => void }) {
   const from = getLiveInspection(pair.from);
   const to = getLiveInspection(pair.to);
   const measurements = getElementDistanceLines(from.documentRect, to.documentRect);
 
   return (
     <div
-      className="dom-ai-measure-pinned-group"
+      className={`dom-ai-measure-pinned-group ${removable ? "dom-ai-measure-pinned-group-removable dom-ai-interactive" : ""}`}
       style={{ "--dom-ai-measure-color": pair.color } as React.CSSProperties}
     >
       <div
@@ -1603,13 +1369,23 @@ function MeasurementPair({ pair }: { pair: PinnedMeasurement }) {
         className="dom-ai-highlight dom-ai-measure-pinned-box"
         style={getHighlightStyle(to)}
       />
-      {measurements.length ? <MeasurementOverlay measurements={measurements} idPrefix={pair.key} /> : (
+      {measurements.length ? <MeasurementOverlay measurements={measurements} idPrefix={pair.key} removable={removable} onRemove={onRemove} /> : (
         <div
-          className="dom-ai-measure-label"
+          className={`dom-ai-measure-label ${removable ? "dom-ai-measure-remove-target" : ""}`}
+          title={removable ? "点击移除此比例尺" : undefined}
           style={{
             left: (from.documentRect.x + to.documentRect.x + to.documentRect.width) / 2,
             top: (from.documentRect.y + to.documentRect.y + to.documentRect.height) / 2
           }}
+          onClick={removable ? (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRemove();
+          } : undefined}
+          onPointerDown={removable ? (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          } : undefined}
         >
           0px
         </div>
@@ -1629,6 +1405,20 @@ function ElementDetails({
 }) {
   const size = `${Math.round(inspection.documentRect.width)} x ${Math.round(inspection.documentRect.height)}`;
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const fontFamily = getPrimaryFontFamily(inspection.fontFamily);
+  const reviewSummary = [
+    size,
+    `${compactUnitValue(inspection.fontSize)} / ${compactUnitValue(inspection.lineHeight)}`,
+    fontFamily,
+    formatColor(inspection.color, "rgb"),
+    `opacity ${inspection.opacity || "-"}`
+  ].filter(Boolean).join(" · ");
+  const advancedSummary = [
+    inspection.display && `display: ${inspection.display}`,
+    inspection.position && `position: ${inspection.position}`,
+    inspection.zIndex && `z-index: ${inspection.zIndex}`,
+    inspection.gap && inspection.gap !== "normal" && `gap: ${inspection.gap}`
+  ].filter(Boolean).join(" · ");
 
   const copyMetric = useCallback(async (label: string, value: string) => {
     try {
@@ -1641,41 +1431,73 @@ function ElementDetails({
   }, []);
 
   return (
-    <div className="mt-2 rounded-xl bg-white p-2 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]">
-      <div className="grid grid-cols-3 gap-1.5">
-        <LightMetric icon={<Ruler size={13} />} label="尺寸" value={size} copied={copiedKey === "尺寸"} onCopy={copyMetric} />
-        <LightMetric label="Display" value={inspection.display} copied={copiedKey === "Display"} onCopy={copyMetric} />
-        <LightMetric label="Position" value={inspection.position} copied={copiedKey === "Position"} onCopy={copyMetric} />
-        <LightMetric label="Z-index" value={inspection.zIndex} copied={copiedKey === "Z-index"} onCopy={copyMetric} />
-        <LightMetric icon={<Type size={13} />} label="字体" value={`${inspection.fontSize} / ${inspection.lineHeight}`} copied={copiedKey === "字体"} onCopy={copyMetric} />
-        <LightMetric label="字重" value={inspection.fontWeight} copied={copiedKey === "字重"} onCopy={copyMetric} />
-        <LightMetric label="圆角" value={inspection.borderRadius} copied={copiedKey === "圆角"} onCopy={copyMetric} />
-        <LightMetric label="透明度" value={inspection.opacity} copied={copiedKey === "透明度"} onCopy={copyMetric} />
-        <LightMetric label="Margin" value={inspection.margin} copied={copiedKey === "Margin"} onCopy={copyMetric} />
-        <LightMetric label="Padding" value={inspection.padding} copied={copiedKey === "Padding"} onCopy={copyMetric} />
-        <LightMetric label="Gap" value={inspection.gap} copied={copiedKey === "Gap"} onCopy={copyMetric} />
-        <LightMetric label="字体名称" value={inspection.fontFamily} copied={copiedKey === "字体名称"} onCopy={copyMetric} />
+    <div className="mt-2 space-y-1.5">
+      <div className="flex items-center gap-1.5 px-0.5 text-[11px] font-extrabold text-ink-800">
+        <Palette size={13} />
+        <span>元素样式</span>
       </div>
-      <div className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-1">
-        {(["rgb", "hex", "hsl"] as ColorMode[]).map((mode) => (
-          <button
-            key={mode}
-            className={`h-7 rounded-md text-[10px] font-extrabold uppercase transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
-              colorMode === mode
-                ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.12)]"
-                : "text-ink-500 hover:bg-white/60 hover:text-ink-800"
-            }`}
-            type="button"
-            onClick={() => onColorModeChange(mode)}
-          >
-            {mode}
-          </button>
-        ))}
-      </div>
-      <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-        <LightColorMetric label="文字" value={inspection.color} mode={colorMode} copied={copiedKey === "文字"} onCopy={copyMetric} />
-        <LightColorMetric label="背景" value={inspection.backgroundColor} mode={colorMode} copied={copiedKey === "背景"} onCopy={copyMetric} />
-      </div>
+
+      <details className="dom-ai-style-details group rounded-lg bg-ink-50/80">
+        <summary className="flex h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-bold text-ink-400 transition-colors duration-150 hover:text-ink-700">
+          <span className="inline-flex w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+            <ChevronDown size={12} className="shrink-0 transition-transform duration-150 group-open:rotate-180" />
+            <Palette size={12} className="shrink-0" />
+            <span className="shrink-0 text-ink-600">设计验收</span>
+            <span className="shrink-0">关键属性</span>
+            <span className="min-w-0 flex-1 truncate font-mono">{reviewSummary}</span>
+          </span>
+        </summary>
+
+        <div className="space-y-1.5 p-1 pt-0">
+          <div className="grid grid-cols-3 rounded-lg bg-white shadow-[inset_0_0_0_1px_rgba(17,24,39,0.07)]">
+            <LightMetric icon={<Ruler size={13} />} label="尺寸" value={size} copied={copiedKey === "尺寸"} onCopy={copyMetric} />
+            <LightMetric icon={<Type size={13} />} label="字号 / 行高" value={`${compactUnitValue(inspection.fontSize)} / ${compactUnitValue(inspection.lineHeight)}`} copied={copiedKey === "字号 / 行高"} onCopy={copyMetric} />
+            <LightMetric label="字重" value={inspection.fontWeight} copied={copiedKey === "字重"} onCopy={copyMetric} />
+            <LightMetric label="圆角" value={inspection.borderRadius} copied={copiedKey === "圆角"} onCopy={copyMetric} />
+            <LightMetric label="内边距" value={inspection.padding} copied={copiedKey === "内边距"} onCopy={copyMetric} />
+            <LightMetric label="透明度" value={inspection.opacity} copied={copiedKey === "透明度"} onCopy={copyMetric} />
+            <LightMetric className="col-span-3" label="字体" value={fontFamily} copied={copiedKey === "字体"} onCopy={copyMetric} />
+          </div>
+
+          <div className="grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-0.5">
+            {(["rgb", "hex", "hsl"] as ColorMode[]).map((mode) => (
+              <button
+                key={mode}
+                className={`h-6 rounded-md text-[10px] font-extrabold uppercase transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
+                  colorMode === mode
+                    ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.12)]"
+                    : "text-ink-500 hover:bg-white/60 hover:text-ink-800"
+                }`}
+                type="button"
+                onClick={() => onColorModeChange(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <LightColorMetric label="文字 · Text" value={inspection.color} mode={colorMode} copied={copiedKey === "文字 · Text"} onCopy={copyMetric} />
+            <LightColorMetric label="背景 · BG" value={inspection.backgroundColor} mode={colorMode} copied={copiedKey === "背景 · BG"} onCopy={copyMetric} />
+          </div>
+        </div>
+      </details>
+
+      <details className="dom-ai-style-details group rounded-lg bg-ink-50/80">
+        <summary className="flex h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-bold text-ink-400 transition-colors duration-150 hover:text-ink-700">
+          <span className="inline-flex w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+            <ChevronDown size={12} className="shrink-0 transition-transform duration-150 group-open:rotate-180" />
+            <Code2 size={12} className="shrink-0" />
+            <span className="shrink-0 text-ink-600">开发属性</span>
+            <span className="min-w-0 flex-1 truncate font-mono">{advancedSummary || "display: - · position: - · z-index: - · gap: -"}</span>
+          </span>
+        </summary>
+        <div className="grid grid-cols-3 gap-1 p-1 pt-0">
+          <LightMetric label="Display" value={inspection.display} copied={copiedKey === "Display"} onCopy={copyMetric} />
+          <LightMetric label="Position" value={inspection.position} copied={copiedKey === "Position"} onCopy={copyMetric} />
+          <LightMetric label="Z-index" value={inspection.zIndex} copied={copiedKey === "Z-index"} onCopy={copyMetric} />
+          <LightMetric label="Gap" value={inspection.gap} copied={copiedKey === "Gap"} onCopy={copyMetric} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -1684,18 +1506,20 @@ function LightMetric({
   icon,
   label,
   value,
+  className = "",
   copied,
   onCopy
 }: {
   icon?: React.ReactNode;
   label: string;
   value: string;
+  className?: string;
   copied: boolean;
   onCopy: (label: string, value: string) => void;
 }) {
   return (
     <button
-      className="rounded-lg bg-ink-50 px-2 py-1.5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-white hover:shadow-[inset_0_0_0_1px_rgba(15,159,120,0.26)] active:scale-[0.96]"
+      className={`min-w-0 bg-white/35 px-2 py-1.5 text-left shadow-[inset_-1px_-1px_0_rgba(17,24,39,0.07)] transition-[background-color,box-shadow,transform] duration-150 hover:bg-white hover:shadow-[inset_0_0_0_1px_rgba(15,159,120,0.26)] active:scale-[0.96] ${className}`}
       type="button"
       title={`复制 ${label}`}
       onClick={() => onCopy(label, value)}
@@ -1740,21 +1564,49 @@ function LightColorMetric({
   );
 }
 
-function MeasurementOverlay({ measurements, idPrefix }: { measurements: MeasurementLine[]; idPrefix: string }) {
+function MeasurementOverlay({
+  measurements,
+  idPrefix,
+  removable = false,
+  onRemove
+}: {
+  measurements: MeasurementLine[];
+  idPrefix: string;
+  removable?: boolean;
+  onRemove?: () => void;
+}) {
+  const removeHandlers = removable && onRemove ? {
+    title: "点击移除此比例尺",
+    onClick: (event: React.MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onRemove();
+    },
+    onPointerDown: (event: React.PointerEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  } : {};
+
   return (
     <>
       {measurements.map((measurement) => (
         <div key={`${idPrefix}-${measurement.key}`}>
           <div
-            className={`dom-ai-measure-line dom-ai-measure-line-${measurement.orientation}`}
+            className={`dom-ai-measure-line dom-ai-measure-line-${measurement.orientation} ${removable ? "dom-ai-measure-remove-target" : ""}`}
             style={{
               left: measurement.x,
               top: measurement.y,
               width: measurement.orientation === "horizontal" ? measurement.length : undefined,
               height: measurement.orientation === "vertical" ? measurement.length : undefined
             }}
+            {...removeHandlers}
           />
-          <div className="dom-ai-measure-label" style={{ left: measurement.labelX, top: measurement.labelY }}>
+          <div
+            className={`dom-ai-measure-label ${removable ? "dom-ai-measure-remove-target" : ""}`}
+            style={{ left: measurement.labelX, top: measurement.labelY }}
+            {...removeHandlers}
+          >
             {measurement.label}
           </div>
         </div>
@@ -1775,11 +1627,11 @@ function PriorityControl({
   return (
     <div>
       <div className="text-[11px] font-bold text-ink-700">优先级</div>
-      <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-1">
+      <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-0.5">
         {options.map((option) => (
           <button
             key={option}
-            className={`h-[30px] rounded-md text-[11px] font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
+            className={`h-7 rounded-md text-[11px] font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
               value === option
                 ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.12)]"
                 : "text-ink-500 hover:bg-white/60 hover:text-ink-800"
@@ -1797,7 +1649,142 @@ function PriorityControl({
 
 function getTargetElement(event: MouseEvent): Element | null {
   const path = event.composedPath();
-  return path.find((node): node is Element => node instanceof Element && !isInjectedElement(node)) ?? null;
+  const pathElement = path.find((node): node is Element => node instanceof Element && !isInjectedElement(node));
+  if (pathElement) return pathElement;
+
+  const hitElement = document.elementFromPoint(event.clientX, event.clientY);
+  if (!hitElement || isInjectedElement(hitElement)) return null;
+  return hitElement;
+}
+
+function shouldDeferPointerToEmbeddedContent(event: MouseEvent): boolean {
+  if (isEmbeddedFrameWindow()) return false;
+  return document.elementsFromPoint(event.clientX, event.clientY).some(isEmbeddedContentHost);
+}
+
+function isPointerLeavingForEmbeddedContent(event: MouseEvent): boolean {
+  if (isEmbeddedFrameWindow()) return false;
+  if (event.relatedTarget instanceof Element && isEmbeddedContentHost(event.relatedTarget)) return true;
+  return shouldDeferPointerToEmbeddedContent(event);
+}
+
+function isEmbeddedContentHost(element: Element): boolean {
+  const tagName = element.tagName.toLowerCase();
+  return tagName === "iframe" || tagName === "wujie-app" || element.hasAttribute("data-micro-src");
+}
+
+function getAnnotationElement(annotation: DomAnnotation): Element | null {
+  return querySelectorDeep(annotation.selector);
+}
+
+function notifyFrameHoverActive(context: PageContext, lastSignalRef: React.MutableRefObject<number>) {
+  const now = performance.now();
+  if (now - lastSignalRef.current < 80) return;
+  lastSignalRef.current = now;
+  void chrome.runtime.sendMessage({ type: "DOM_AI_FRAME_HOVER_ACTIVE", frameId: context.frameId });
+}
+
+function isAnnotationForCurrentDocument(annotation: DomAnnotation, context: PageContext): boolean {
+  if (!annotation.context) return annotation.url === location.href;
+
+  const sameContextUrl = normalizeContextUrl(annotation.context.url) === normalizeContextUrl(context.url);
+  const sameAnnotationUrl = normalizeContextUrl(annotation.url) === normalizeContextUrl(context.url);
+  const liveElement = getAnnotationElement(annotation);
+
+  if (
+    annotation.context.frameId !== undefined &&
+    context.frameId !== undefined &&
+    annotation.context.frameId === context.frameId &&
+    sameContextUrl
+  ) {
+    return true;
+  }
+
+  if (annotation.context.kind === "wujie" || annotation.context.kind === "micro-app") {
+    const annotationTopUrl = annotation.context.topUrl || annotation.context.url;
+    const currentTopUrl = context.topUrl || context.url;
+    return normalizeContextUrl(annotationTopUrl) === normalizeContextUrl(currentTopUrl) && Boolean(liveElement);
+  }
+
+  return (sameContextUrl || sameAnnotationUrl) && Boolean(liveElement);
+}
+
+function normalizeContextUrl(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (url.pathname !== "/" && url.pathname.endsWith("/")) {
+      url.pathname = url.pathname.replace(/\/+$/, "");
+    }
+    return url.toString();
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
+}
+
+function getAnnotationPageContext(element: Element, baseContext: PageContext): PageContext {
+  const ancestors = getElementComposedAncestors(element);
+  const wujieHost = ancestors.find((item) => item.tagName.toLowerCase() === "wujie-app");
+  if (wujieHost) {
+    const hostUrl = wujieHost.getAttribute("data-wujie-url") || undefined;
+    return {
+      ...baseContext,
+      kind: "wujie",
+      url: hostUrl || baseContext.url,
+      title: document.title,
+      topUrl: baseContext.topUrl || location.href,
+      topTitle: baseContext.topTitle || document.title,
+      hostSelector: getCssSelector(wujieHost),
+      hostUrl
+    };
+  }
+
+  const microHost = ancestors.find((item) => item.hasAttribute("data-micro-src"));
+  if (microHost) {
+    const hostUrl = microHost.getAttribute("data-micro-src") || undefined;
+    return {
+      ...baseContext,
+      kind: "micro-app",
+      url: hostUrl || baseContext.url,
+      title: document.title,
+      topUrl: baseContext.topUrl || location.href,
+      topTitle: baseContext.topTitle || document.title,
+      hostSelector: getCssSelector(microHost),
+      hostUrl
+    };
+  }
+
+  return baseContext;
+}
+
+function getElementComposedAncestors(element: Element): Element[] {
+  const ancestors: Element[] = [];
+  let current: Element | null = element;
+
+  while (current) {
+    ancestors.push(current);
+    if (current.parentElement) {
+      current = current.parentElement;
+      continue;
+    }
+
+    const root = current.getRootNode();
+    current = root instanceof ShadowRoot && root.host instanceof Element ? root.host : null;
+  }
+
+  return ancestors;
+}
+
+function isEmbeddedFrameWindow(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+function isPrimaryPointerSelection(event: PointerEvent): boolean {
+  return event.isPrimary !== false && event.button === 0;
 }
 
 function isInjectedElement(element: Element): boolean {
@@ -1807,6 +1794,30 @@ function isInjectedElement(element: Element): boolean {
   if (className.split(/\s+/).some((name) => name.startsWith("dom-ai-"))) return true;
   const root = element.getRootNode();
   return root instanceof ShadowRoot && root.host instanceof Element && root.host.id === ROOT_ID;
+}
+
+function isInjectedEvent(event: Event): boolean {
+  return event.composedPath().some((node) => node instanceof Element && isInjectedElement(node));
+}
+
+function suppressNextPageClick() {
+  let timeout = 0;
+  const cleanup = () => {
+    window.clearTimeout(timeout);
+    window.removeEventListener("click", blockClick, true);
+    document.removeEventListener("click", blockClick, true);
+  };
+  const blockClick = (event: MouseEvent) => {
+    if (isInjectedEvent(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    cleanup();
+  };
+
+  window.addEventListener("click", blockClick, true);
+  document.addEventListener("click", blockClick, true);
+  timeout = window.setTimeout(cleanup, 800);
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -1955,7 +1966,7 @@ function getAnnotationDraft(annotation: DomAnnotation): AnnotationDraft {
 }
 
 function getInspectionForAnnotation(annotation: DomAnnotation): HoverInspection {
-  const liveElement = document.querySelector(annotation.selector);
+  const liveElement = getAnnotationElement(annotation);
   if (liveElement) return getElementInspection(liveElement);
 
   const documentRect = getAnnotationDocumentRect(annotation);
@@ -1988,7 +1999,7 @@ function getInspectionForAnnotation(annotation: DomAnnotation): HoverInspection 
 }
 
 function getAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["documentRect"] {
-  const liveElement = document.querySelector(annotation.selector);
+  const liveElement = getAnnotationElement(annotation);
   if (liveElement) {
     const rect = liveElement.getBoundingClientRect();
     return {
@@ -2012,7 +2023,7 @@ function getSavedAnnotationDocumentRect(annotation: DomAnnotation): HoverInspect
 }
 
 function getAnnotationBorderRadius(annotation: DomAnnotation): string | undefined {
-  const liveElement = document.querySelector(annotation.selector);
+  const liveElement = getAnnotationElement(annotation);
   if (liveElement) return normalizeBorderRadius(window.getComputedStyle(liveElement).borderRadius);
   return normalizeBorderRadius(annotation.computedStyles.borderRadius);
 }
@@ -2155,6 +2166,16 @@ function compactPxNumber(value: number): string {
   return `${Math.round(value * 10) / 10}px`;
 }
 
+function compactUnitValue(value: string): string {
+  if (!value) return "-";
+  return compactPx(value);
+}
+
+function getPrimaryFontFamily(value: string): string {
+  const [primary] = value.split(",");
+  return (primary || value).trim().replace(/^["']|["']$/g, "") || "-";
+}
+
 function formatColor(value: string, mode: ColorMode): string {
   const color = parseCssRgb(value);
   if (!color) return value;
@@ -2261,6 +2282,7 @@ function focusAnnotation(id: string, annotations: DomAnnotation[]) {
 async function captureAnnotationScreenshotData(selector: string, savedRect: ElementRect): Promise<AnnotationScreenshot | undefined> {
   try {
     const viewportRect = getCurrentViewportRectForCapture(selector, savedRect);
+    if (!viewportRect) return undefined;
     const response = await captureVisibleTabWithoutOverlay(viewportRect);
     if (!response?.success || !response.data) return undefined;
     const cropped = await cropScreenshot(response.data.dataUrl, viewportRect, window.devicePixelRatio);
@@ -2298,24 +2320,49 @@ function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
-function getCurrentViewportRectForCapture(selector: string, savedRect: ElementRect): RectSnapshot {
-  const liveElement = document.querySelector(selector);
+function getCurrentViewportRectForCapture(selector: string, savedRect: ElementRect): RectSnapshot | null {
+  const liveElement = querySelectorDeep(selector);
   if (liveElement) {
     const rect = liveElement.getBoundingClientRect();
+    const topOffset = getFrameViewportOffsetToTop();
+    if (!topOffset) return null;
     return {
-      x: rect.x,
-      y: rect.y,
+      x: rect.x + topOffset.x,
+      y: rect.y + topOffset.y,
       width: rect.width,
       height: rect.height
     };
   }
 
+  const topOffset = getFrameViewportOffsetToTop();
+  if (!topOffset) return null;
   return {
-    x: savedRect.x + savedRect.scrollX - window.scrollX,
-    y: savedRect.y + savedRect.scrollY - window.scrollY,
+    x: savedRect.x + savedRect.scrollX - window.scrollX + topOffset.x,
+    y: savedRect.y + savedRect.scrollY - window.scrollY + topOffset.y,
     width: savedRect.width,
     height: savedRect.height
   };
+}
+
+function getFrameViewportOffsetToTop(): { x: number; y: number } | null {
+  let current: Window = window;
+  let x = 0;
+  let y = 0;
+
+  while (true) {
+    if (current === current.top) return { x, y };
+
+    try {
+      const frameElement = current.frameElement;
+      if (!frameElement) return null;
+      const rect = frameElement.getBoundingClientRect();
+      x += rect.left;
+      y += rect.top;
+      current = current.parent;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width: number; height: number }, dpr: number): Promise<string> {
@@ -2485,7 +2532,7 @@ function mount() {
   if (isExcludedUrl(window.location.href)) return;
   const host = document.createElement("div");
   host.id = ROOT_ID;
-  host.style.cssText = "position: fixed; inset: 0; width: 0; height: 0; overflow: visible; pointer-events: none; z-index: 2147483647;";
+  host.style.cssText = "position: fixed; inset: 0; width: 100vw; height: 100vh; overflow: visible; pointer-events: none; z-index: 2147483647;";
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = cssText;
