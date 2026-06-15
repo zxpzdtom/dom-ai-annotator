@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.2.1.zip`
-- Version: `0.2.1`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.0.zip`
+- Version: `0.3.0`
 
 ## Listing
 
@@ -42,6 +42,7 @@ DOM Review 是一个 Chrome 侧边栏工具，用来在真实网页上选择 DOM
   - `/Users/tom/code/dom-ai-annotator/promo-video/assets/chrome-store/screenshot-04-export-import-1280x800.png`
   - `/Users/tom/code/dom-ai-annotator/promo-video/assets/chrome-store/screenshot-05-workflow-1280x800.png`
 - Promo video: `/Users/tom/code/dom-ai-annotator/promo-video/renders/dom-ai-annotator-promo.mp4`
+- Store icon: `/Users/tom/code/dom-ai-annotator/public/icons/icon-128.png`
 
 ## Permission Justifications
 
