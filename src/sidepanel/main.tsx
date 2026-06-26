@@ -32,11 +32,12 @@ import { getStatusTone, severityLabels, statusLabels, type Tone } from "../share
 import {
   clearAnnotationsForUrl,
   deleteAnnotation,
+  deleteAnnotationsByIds,
   getAnnotations,
   normalizeStatus,
   saveAnnotations,
   subscribeAnnotations,
-  updateAnnotationStatus,
+  updateAnnotationStatusesByIds,
   updateAnnotationStatusesForUrl
 } from "../shared/storage";
 import { exportAnnotationsAsMarkdown, importAnnotationsFromMarkdown } from "../shared/exporters";
@@ -70,6 +71,9 @@ const monitorFilterLabels: Record<MonitorFilter, string> = {
   error: "Errors",
   alerts: "Warnings"
 };
+
+const CONTENT_MOUNT_RETRY_DELAYS = [0, 300, 1000, 2500, 5000, 8000];
+const PANEL_HEARTBEAT_INTERVAL_MS = 1000;
 
 const filterLabels: Record<StatusFilter, string> = {
   all: "全部",
@@ -269,19 +273,82 @@ function App() {
 
   useEffect(() => {
     if (!tab?.id || !canMountContent) return;
-    void ensureContentScript(tab.id).then(async () => {
-      if (canInspect) await enableMonitor();
+    const tabId = tab.id;
+    void ensureContentScript(tabId).then(async () => {
+      await setContentPanelVisible(tabId, true);
+      if (canInspect && panelMode === "monitor") await enableMonitor();
       setError((current) => (isContentScriptErrorText(current) ? "" : current));
     }).catch(() => {
       // Tool actions surface injection failures. Initial pin rendering can fail silently.
     });
-  }, [canInspect, canMountContent, pageLoadTick, tab?.id]);
+  }, [canInspect, canMountContent, pageLoadTick, panelMode, tab?.id]);
+
+  useEffect(() => {
+    if (!tab?.id || !canMountContent) return;
+    const tabId = tab.id;
+    const heartbeat = () => {
+      void chrome.runtime.sendMessage({ type: "DOM_AI_PANEL_HEARTBEAT", tabId }).catch(() => undefined);
+    };
+
+    heartbeat();
+    const timer = window.setInterval(heartbeat, PANEL_HEARTBEAT_INTERVAL_MS);
+    const close = () => {
+      window.clearInterval(timer);
+      void setContentPanelVisible(tabId, false).catch(() => undefined);
+      void chrome.runtime.sendMessage({ type: "DOM_AI_PANEL_CLOSED", tabId }).catch(() => undefined);
+    };
+
+    window.addEventListener("pagehide", close, { once: true });
+    window.addEventListener("beforeunload", close, { once: true });
+    return () => {
+      window.removeEventListener("pagehide", close);
+      window.removeEventListener("beforeunload", close);
+      close();
+    };
+  }, [canMountContent, tab?.id]);
+
+  useEffect(() => {
+    if (!tab?.id || !canMountContent || !isViewingActivePage) return;
+    const tabId = tab.id;
+    const timers = CONTENT_MOUNT_RETRY_DELAYS.map((delayMs) =>
+      window.setTimeout(() => {
+        void ensureContentScript(tabId).then(() => {
+          void setContentPanelVisible(tabId, true).catch(() => undefined);
+          setError((current) => (isContentScriptErrorText(current) ? "" : current));
+        }).catch(() => undefined);
+      }, delayMs)
+    );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [canMountContent, isViewingActivePage, pageAnnotations.length, pageLoadTick, tab?.id, viewedUrl]);
+
+  useEffect(() => {
+    if (!tab?.id || !canMountContent || !isViewingActivePage) return;
+    const tabId = tab.id;
+    const handleFrameNavigation = (details: { tabId: number; url?: string }) => {
+      if (details.tabId !== tabId) return;
+      if (details.url && (!isInspectableUrl(details.url) || isExcludedUrl(details.url))) return;
+      window.setTimeout(() => {
+        void ensureContentScript(tabId)
+          .then(() => setContentPanelVisible(tabId, true))
+          .catch(() => undefined);
+      }, 80);
+    };
+
+    chrome.webNavigation.onCommitted.addListener(handleFrameNavigation);
+    chrome.webNavigation.onCompleted.addListener(handleFrameNavigation);
+    chrome.webNavigation.onHistoryStateUpdated.addListener(handleFrameNavigation);
+    return () => {
+      chrome.webNavigation.onCommitted.removeListener(handleFrameNavigation);
+      chrome.webNavigation.onCompleted.removeListener(handleFrameNavigation);
+      chrome.webNavigation.onHistoryStateUpdated.removeListener(handleFrameNavigation);
+    };
+  }, [canMountContent, isViewingActivePage, tab?.id, viewedUrl]);
 
   useEffect(() => {
     setMonitorEvents([]);
     setMonitorSelectedIds([]);
-    if (canInspect) void enableMonitor();
-  }, [canInspect, currentUrl]);
+    if (canInspect && panelMode === "monitor") void enableMonitor();
+  }, [canInspect, currentUrl, panelMode]);
 
   useEffect(() => {
     const listener = (message: RuntimeMessage) => {
@@ -307,18 +374,23 @@ function App() {
         return;
       }
 
-      if (message.type !== "DOM_AI_MONITOR_EVENT") return;
+      if (message.type !== "DOM_AI_MONITOR_EVENT" || panelMode !== "monitor") return;
       if (!isSamePageOrigin(message.event.pageUrl, currentUrl)) return;
       setMonitorEvents((items) => [message.event, ...items.filter((item) => item.id !== message.event.id)].slice(0, 800));
     };
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [currentUrl, refresh]);
+  }, [currentUrl, panelMode, refresh]);
 
   useEffect(() => {
     setConfirmClearPage(false);
   }, [pageAnnotations.length, viewedUrl]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+    setSelectionMode(false);
+  }, [viewedUrl]);
 
   useEffect(() => {
     if (!confirmClearPage) return;
@@ -438,8 +510,19 @@ function App() {
   async function copy() {
     setError("");
     try {
-      await writeClipboardText(exportAnnotationsAsMarkdown(pageAnnotations));
-      if (viewedUrl) {
+      const copiedAnnotations = selectedIds.length
+        ? pageAnnotations.filter((item) => selectedIds.includes(item.id))
+        : pageAnnotations;
+      if (!copiedAnnotations.length) {
+        setSelectedIds([]);
+        setError("没有可复制的标注。");
+        return;
+      }
+      await writeClipboardText(exportAnnotationsAsMarkdown(copiedAnnotations));
+      if (selectedIds.length) {
+        await updateAnnotationStatusesByIds(copiedAnnotations.map((item) => item.id), ["pending"], "sent");
+        setSelectedIds([]);
+      } else if (viewedUrl) {
         await updateAnnotationStatusesForUrl(viewedUrl, ["pending"], "sent");
       }
       setCopied(true);
@@ -488,11 +571,11 @@ function App() {
   }
 
   async function updateSelectedStatuses(ids: string[], status: AnnotationStatus) {
-    await Promise.all(ids.map((id) => updateAnnotationStatus(id, status)));
+    await updateAnnotationStatusesByIds(ids, statusOptions, status);
   }
 
   async function deleteSelected() {
-    await Promise.all(selectedIds.map((id) => deleteAnnotation(id)));
+    await deleteAnnotationsByIds(selectedIds);
     setSelectedIds([]);
   }
 
@@ -947,7 +1030,7 @@ function App() {
                 onClick={() => void copy()}
               >
                 {copied ? <CheckCircle2 size={16} /> : <Clipboard size={16} />}
-                <span className="truncate">{copied ? "已复制" : "复制 Markdown"}</span>
+                <span className="truncate">{copied ? "已复制" : selectedIds.length ? `复制 ${selectedIds.length} 条` : "复制 Markdown"}</span>
               </button>
               <button
                 className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
@@ -2122,6 +2205,18 @@ async function injectContentScript(tabId: number) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: () => import(chrome.runtime.getURL("content.js"))
+  });
+}
+
+async function setContentPanelVisible(tabId: number, active: boolean) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: (isActive: boolean) => {
+      window.dispatchEvent(new CustomEvent("dom-ai-panel-visibility", {
+        detail: { active: isActive }
+      }));
+    },
+    args: [active]
   });
 }
 

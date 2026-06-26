@@ -7,7 +7,7 @@ export function exportAnnotationsAsJson(annotations: DomAnnotation[]): string {
 }
 
 export function exportAnnotationsAsMarkdown(annotations: DomAnnotation[]): string {
-  const visible = [...annotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const visible = stripScreenshots(annotations).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   return [
     "# 给 AI 实现的 UI 反馈",

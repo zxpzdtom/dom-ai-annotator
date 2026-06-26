@@ -5,9 +5,8 @@
  * Chrome DevTools MCP's evaluate_script.
  *
  * Read operations pull data from:
- *   - DOM JSON block (#dom-ai-data) for annotations (synced by ISOLATED world)
- *   - window.__DOM_AI_DEVTOOLS_CONSOLE__ for console events
- *   - window.__DOM_AI_NETWORK_EVENTS__ for network events
+ *   - persisted annotation data exposed by the ISOLATED world host cache
+ *   - DevTools debug events mirrored from extension session storage
  *
  * Write operations use CustomEvent + DOM attributes to bridge into the
  * ISOLATED world (which has chrome.storage access).
@@ -25,8 +24,7 @@ import type { MonitorEvent } from "../shared/types";
 declare global {
   interface Window {
     __domAiAPI?: DomAiAPI;
-    __DOM_AI_DEVTOOLS_CONSOLE__?: MonitorEvent[];
-    __DOM_AI_NETWORK_EVENTS__?: MonitorEvent[];
+    __DOM_AI_LOCATION_BRIDGE_INSTALLED__?: boolean;
   }
 }
 
@@ -50,7 +48,7 @@ interface DomAiAPI {
 const REQUEST_ATTR = "data-dom-ai-request";
 const RESPONSE_ATTR = "data-dom-ai-response";
 const REQUEST_EVENT = "dom-ai-api-request";
-const DATA_ELEMENT_ID = "dom-ai-data";
+const LOCATION_CHANGE_EVENT = "dom-ai-location-change";
 
 let requestCounter = 0;
 
@@ -75,14 +73,39 @@ function sendCommand(method: string, params: Record<string, unknown> = {}): ApiR
   }
 }
 
-function readDomData(): { annotations: unknown[]; api?: unknown } {
-  const el = document.getElementById(DATA_ELEMENT_ID);
-  if (!el) return { annotations: [] };
-  try {
-    return JSON.parse(el.textContent || "{}");
-  } catch {
-    return { annotations: [] };
-  }
+function readDomData(): { annotations: unknown[]; debugEvents?: MonitorEvent[]; api?: unknown } {
+  const response = sendCommand("getDomData");
+  if (!response.success) return { annotations: [] };
+  const data = response.data;
+  if (!data || typeof data !== "object") return { annotations: [] };
+  return data as { annotations: unknown[]; debugEvents?: MonitorEvent[]; api?: unknown };
+}
+
+function installLocationBridge() {
+  if (window.__DOM_AI_LOCATION_BRIDGE_INSTALLED__) return;
+  window.__DOM_AI_LOCATION_BRIDGE_INSTALLED__ = true;
+
+  let lastHref = location.href;
+  const notifyIfChanged = () => {
+    if (location.href === lastHref) return;
+    lastHref = location.href;
+    document.dispatchEvent(new CustomEvent(LOCATION_CHANGE_EVENT, { detail: { href: lastHref } }));
+  };
+
+  const wrapHistoryMethod = (method: "pushState" | "replaceState") => {
+    const original = history[method];
+    if (typeof original !== "function") return;
+    history[method] = function domAiHistoryMethod(this: History, ...args: Parameters<History[typeof method]>) {
+      const result = original.apply(this, args);
+      queueMicrotask(notifyIfChanged);
+      return result;
+    } as History[typeof method];
+  };
+
+  wrapHistoryMethod("pushState");
+  wrapHistoryMethod("replaceState");
+  window.addEventListener("popstate", notifyIfChanged);
+  window.addEventListener("hashchange", notifyIfChanged);
 }
 
 function isSuspiciousEvent(event: MonitorEvent): boolean {
@@ -92,6 +115,8 @@ function isSuspiciousEvent(event: MonitorEvent): boolean {
   const body = `${event.responseBody || ""} ${event.statusText || ""}`.toLowerCase();
   return event.ok === false || (event.status || 0) >= 400 || /error|exception|failed|fail|timeout|denied/.test(body);
 }
+
+installLocationBridge();
 
 if (!window.__domAiAPI) {
   window.__domAiAPI = {
@@ -115,7 +140,7 @@ if (!window.__domAiAPI) {
     },
 
     getConsoleErrors(options) {
-      const events = window.__DOM_AI_DEVTOOLS_CONSOLE__ || [];
+      const events = readDomData().debugEvents?.filter((event) => event.kind !== "network") || [];
       const severity = options?.severity || "error";
       const limit = options?.limit || 30;
 
@@ -140,7 +165,7 @@ if (!window.__domAiAPI) {
     },
 
     getNetworkIssues(options) {
-      const events = window.__DOM_AI_NETWORK_EVENTS__ || [];
+      const events = readDomData().debugEvents?.filter((event) => event.kind === "network") || [];
       const limit = options?.limit || 30;
       const statusFilter = options?.statusFilter || "failed";
 
@@ -173,8 +198,9 @@ if (!window.__domAiAPI) {
 
     getSuspicious(options) {
       const limit = options?.limit || 30;
-      const consoleEvents = (window.__DOM_AI_DEVTOOLS_CONSOLE__ || []).filter(isSuspiciousEvent);
-      const networkEvents = (window.__DOM_AI_NETWORK_EVENTS__ || []).filter(isSuspiciousEvent);
+      const debugEvents = readDomData().debugEvents || [];
+      const consoleEvents = debugEvents.filter((event) => event.kind !== "network").filter(isSuspiciousEvent);
+      const networkEvents = debugEvents.filter((event) => event.kind === "network").filter(isSuspiciousEvent);
 
       const suspicious = [...consoleEvents, ...networkEvents]
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
@@ -199,8 +225,9 @@ if (!window.__domAiAPI) {
     getSummary() {
       const data = readDomData();
       const annotations = data.annotations as Array<Record<string, unknown>>;
-      const consoleEvents = window.__DOM_AI_DEVTOOLS_CONSOLE__ || [];
-      const networkEvents = window.__DOM_AI_NETWORK_EVENTS__ || [];
+      const debugEvents = data.debugEvents || [];
+      const consoleEvents = debugEvents.filter((event) => event.kind !== "network");
+      const networkEvents = debugEvents.filter((event) => event.kind === "network");
 
       const pending = annotations.filter((a) => a.status === "pending" || a.status === "sent" || a.status === "needs_work");
       const consoleErrors = consoleEvents.filter((e) => e.severity === "error");

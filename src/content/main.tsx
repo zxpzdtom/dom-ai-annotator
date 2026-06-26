@@ -23,10 +23,13 @@ const HOVER_LABEL_GAP = 8;
 const HOVER_LABEL_HEIGHT = 34;
 const HOVER_LABEL_MAX_WIDTH = 320;
 const HOVER_LABEL_VIEWPORT_GAP = 8;
+const MAX_ANNOTATION_SCREENSHOT_DIMENSION = 960;
 const MEASURE_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#ea580c", "#0891b2", "#16a34a"];
 const MONITOR_SCRIPT_ID = "dom-ai-monitor-bridge-script";
 const MAX_MONITOR_EVENTS = 400;
 const MONITOR_EVENT_NAME = "dom-ai-monitor-event";
+const INITIAL_PIN_REFRESH_DELAYS = [250, 800, 1800, 3500, 6000];
+const PANEL_VISIBILITY_EVENT = "dom-ai-panel-visibility";
 const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
     <path d="M8.2 25.8v-5.2A8.7 8.7 0 0 1 5.5 14.2C5.5 9 9.7 5 15.1 5h4.7c5.4 0 9.7 4 9.7 9.2s-4.3 9.2-9.7 9.2h-6.4l-5.2 2.4Z" fill="white" stroke="black" stroke-width="3.2" stroke-linejoin="round"/>
@@ -188,6 +191,7 @@ function injectMonitorBridge() {
 }
 
 function App() {
+  const [panelActive, setPanelActive] = useState(false);
   const [isPicking, setPicking] = useState(false);
   const [isMeasuring, setMeasuring] = useState(false);
   const [hoverInspection, setHoverInspection] = useState<HoverInspection | null>(null);
@@ -208,10 +212,45 @@ function App() {
   const focusTimerRef = useRef<number | null>(null);
   const lastFrameHoverSignalRef = useRef(0);
 
+  const clearTransientUi = useCallback(() => {
+    setPicking(false);
+    setMeasuring(false);
+    setHoverInspection(null);
+    setMeasureAnchor(null);
+    setMeasureHover(null);
+    setMeasurePaused(false);
+    setPinnedMeasurements([]);
+    setComposer(null);
+    setResumePickingAfterComposer(false);
+    setFocusedAnnotationId(null);
+    setHoveredAnnotationId(null);
+    setToolbarDismissed(false);
+    document.getElementById("dom-ai-img-preview")?.remove();
+  }, []);
+
+  const setPanelVisible = useCallback((active: boolean) => {
+    if (!active) {
+      setPanelActive(false);
+      clearTransientUi();
+      return;
+    }
+
+    setPanelActive(true);
+  }, [clearTransientUi]);
+
   useEffect(() => {
-    enableMonitor();
     void getFramePageContext().then(setPageContext);
   }, []);
+
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setPanelVisible(Boolean(detail?.active));
+    };
+
+    window.addEventListener(PANEL_VISIBILITY_EVENT, listener);
+    return () => window.removeEventListener(PANEL_VISIBILITY_EVENT, listener);
+  }, [setPanelVisible]);
 
   const refreshAnnotations = useCallback(async () => {
     const items = await getAnnotations();
@@ -220,7 +259,17 @@ function App() {
 
   useEffect(() => {
     void refreshAnnotations();
-    return subscribeAnnotations(refreshAnnotations);
+    const timers = INITIAL_PIN_REFRESH_DELAYS.map((delayMs) =>
+      window.setTimeout(() => void refreshAnnotations(), delayMs)
+    );
+    const onLoad = () => void refreshAnnotations();
+    window.addEventListener("load", onLoad);
+    const unsubscribe = subscribeAnnotations(refreshAnnotations);
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener("load", onLoad);
+      unsubscribe();
+    };
   }, [refreshAnnotations]);
 
   useEffect(() => {
@@ -247,6 +296,7 @@ function App() {
   useEffect(() => {
     const listener = (message: ContentMessage, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
       if (message.type === "DOM_AI_START_PICKING") {
+        setPanelVisible(true);
         setMeasuring(false);
         setResumePickingAfterComposer(false);
         setMeasureAnchor(null);
@@ -259,6 +309,7 @@ function App() {
         setResumePickingAfterComposer(false);
       }
       if (message.type === "DOM_AI_START_MEASURING") {
+        setPanelVisible(true);
         setPicking(false);
         setComposer(null);
         setResumePickingAfterComposer(false);
@@ -278,8 +329,14 @@ function App() {
         setMeasureHover(null);
       }
       if (message.type === "DOM_AI_REFRESH_PINS") void refreshAnnotations();
-      if (message.type === "DOM_AI_FOCUS_ANNOTATION") focusAndHighlightAnnotation(message.id, annotations);
-      if (message.type === "DOM_AI_EDIT_ANNOTATION") openAnnotationEditor(message.id, annotations);
+      if (message.type === "DOM_AI_FOCUS_ANNOTATION") {
+        setPanelVisible(true);
+        focusAndHighlightAnnotation(message.id, annotations);
+      }
+      if (message.type === "DOM_AI_EDIT_ANNOTATION") {
+        setPanelVisible(true);
+        openAnnotationEditor(message.id, annotations);
+      }
       if (message.type === "DOM_AI_MONITOR_ENABLE") {
         sendResponse(enableMonitor());
         return true;
@@ -298,10 +355,10 @@ function App() {
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [annotations, refreshAnnotations]);
+  }, [annotations, refreshAnnotations, setPanelVisible]);
 
   useEffect(() => {
-    const cursor = isPicking ? COMMENT_CURSOR : isMeasuring && !measurePaused ? "crosshair" : "";
+    const cursor = panelActive && isPicking ? COMMENT_CURSOR : panelActive && isMeasuring && !measurePaused ? "crosshair" : "";
     document.body.style.cursor = cursor;
     document.documentElement.style.cursor = cursor;
 
@@ -309,9 +366,11 @@ function App() {
       document.body.style.cursor = "";
       document.documentElement.style.cursor = "";
     };
-  }, [isMeasuring, isPicking, measurePaused]);
+  }, [isMeasuring, isPicking, measurePaused, panelActive]);
 
   useEffect(() => {
+    if (!panelActive) return;
+
     const onToolShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isEditableEvent(event)) return;
 
@@ -338,10 +397,10 @@ function App() {
 
     window.addEventListener("keydown", onToolShortcut, true);
     return () => window.removeEventListener("keydown", onToolShortcut, true);
-  }, [isMeasuring, isPicking, measureAnchor, measureHover, measurePaused]);
+  }, [isMeasuring, isPicking, measureAnchor, measureHover, measurePaused, panelActive]);
 
   useEffect(() => {
-    if (!isPicking) {
+    if (!panelActive || !isPicking) {
       setHoverInspection(null);
       return;
     }
@@ -421,10 +480,10 @@ function App() {
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [isPicking]);
+  }, [isPicking, panelActive]);
 
   useEffect(() => {
-    if (!isMeasuring || measurePaused) {
+    if (!panelActive || !isMeasuring || measurePaused) {
       setMeasureAnchor(null);
       setMeasureHover(null);
       return;
@@ -505,7 +564,7 @@ function App() {
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [isMeasuring, measureAnchor, measureHover, measurePaused]);
+  }, [isMeasuring, measureAnchor, measureHover, measurePaused, panelActive]);
 
   const sortedAnnotations = useMemo(
     () => [...annotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -598,6 +657,8 @@ function App() {
     setMeasureHover(null);
     setMeasurePaused(false);
   }
+
+  if (!panelActive) return null;
 
   return (
     <div className="dom-ai-root">
@@ -1689,7 +1750,6 @@ function isAnnotationForCurrentDocument(annotation: DomAnnotation, context: Page
 
   const sameContextUrl = normalizeContextUrl(annotation.context.url) === normalizeContextUrl(context.url);
   const sameAnnotationUrl = normalizeContextUrl(annotation.url) === normalizeContextUrl(context.url);
-  const liveElement = getAnnotationElement(annotation);
 
   if (
     annotation.context.frameId !== undefined &&
@@ -1703,10 +1763,10 @@ function isAnnotationForCurrentDocument(annotation: DomAnnotation, context: Page
   if (annotation.context.kind === "wujie" || annotation.context.kind === "micro-app") {
     const annotationTopUrl = annotation.context.topUrl || annotation.context.url;
     const currentTopUrl = context.topUrl || context.url;
-    return normalizeContextUrl(annotationTopUrl) === normalizeContextUrl(currentTopUrl) && Boolean(liveElement);
+    return normalizeContextUrl(annotationTopUrl) === normalizeContextUrl(currentTopUrl);
   }
 
-  return (sameContextUrl || sameAnnotationUrl) && Boolean(liveElement);
+  return sameContextUrl || sameAnnotationUrl;
 }
 
 function normalizeContextUrl(value: string | undefined): string {
@@ -2369,7 +2429,6 @@ function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement("canvas");
       const sx = Math.max(0, Math.round(rect.x * dpr));
       const sy = Math.max(0, Math.round(rect.y * dpr));
       const ex = Math.min(img.width, Math.round((rect.x + rect.width) * dpr));
@@ -2377,10 +2436,16 @@ function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width
       const sw = ex - sx;
       const sh = ey - sy;
       if (sw <= 0 || sh <= 0) { resolve(fullDataUrl); return; }
+      const scale = Math.min(1, MAX_ANNOTATION_SCREENSHOT_DIMENSION / sw, MAX_ANNOTATION_SCREENSHOT_DIMENSION / sh);
+      const canvas = document.createElement("canvas");
       canvas.width = sw;
       canvas.height = sh;
+      if (scale < 1) {
+        canvas.width = Math.max(1, Math.round(sw * scale));
+        canvas.height = Math.max(1, Math.round(sh * scale));
+      }
       const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
       resolve(canvas.toDataURL("image/png"));
     };
     img.onerror = () => resolve(fullDataUrl);

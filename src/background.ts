@@ -1,5 +1,10 @@
 import { isExcludedUrl } from "./shared/excludedUrls";
-import type { PageContext, RuntimeMessage } from "./shared/types";
+import type { MonitorEvent, MonitorEventKind, PageContext, RuntimeMessage } from "./shared/types";
+
+const DEBUG_STORAGE_PREFIX = "domAiDebugEvents:";
+const MAX_DEBUG_EVENTS = 600;
+const PANEL_HEARTBEAT_TIMEOUT_MS = 2500;
+const panelHeartbeats = new Map<number, number>();
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -20,9 +25,7 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === "complete") {
-    void syncTabSidePanel(tabId, tab.url).then((enabled) => {
-      if (enabled && changeInfo.status === "complete") void ensureTabMonitor(tabId);
-    });
+    void syncTabSidePanel(tabId, tab.url);
   }
 });
 
@@ -107,6 +110,53 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     });
     return true; // async sendResponse
   }
+
+  if (message.type === "DOM_AI_RECORD_DEBUG_EVENT") {
+    const tabId = sender.tab?.id ?? 0;
+    if (!tabId) return;
+    void appendDebugEvent(tabId, message.event);
+    return;
+  }
+
+  if (message.type === "DOM_AI_SET_DEBUG_EVENTS") {
+    void setDebugEventsForKind(message.tabId, message.kind, message.events);
+    return;
+  }
+
+  if (message.type === "DOM_AI_GET_DEBUG_EVENTS") {
+    const tabId = message.tabId ?? sender.tab?.id ?? 0;
+    void getDebugEvents(tabId).then((events) => sendResponse({ events }));
+    return true;
+  }
+
+  if (message.type === "DOM_AI_CLEAR_DEBUG_EVENTS") {
+    void clearDebugEvents(message.tabId, message.kind).then(() => sendResponse({ success: true }));
+    return true;
+  }
+
+  if (message.type === "DOM_AI_GET_DEBUG_STORAGE_CONTEXT") {
+    sendResponse({ tabId: sender.tab?.id ?? 0 });
+    return;
+  }
+
+  if (message.type === "DOM_AI_PANEL_HEARTBEAT") {
+    panelHeartbeats.set(message.tabId, Date.now());
+    sendResponse({ active: true });
+    return;
+  }
+
+  if (message.type === "DOM_AI_PANEL_CLOSED") {
+    panelHeartbeats.delete(message.tabId);
+    void clearDebugEvents(message.tabId);
+    sendResponse({ active: false });
+    return;
+  }
+
+  if (message.type === "DOM_AI_GET_PANEL_STATE") {
+    const tabId = message.tabId ?? sender.tab?.id ?? 0;
+    sendResponse({ active: isPanelActive(tabId) });
+    return;
+  }
 });
 
 async function getActiveTab() {
@@ -142,8 +192,6 @@ async function syncTabSidePanel(tabId: number, url?: string): Promise<boolean> {
     path: "src/sidepanel/index.html",
     enabled: true
   });
-  void ensureTabMonitor(tabId);
-  void ensureAgentBridgeHost(tabId);
   return true;
 }
 
@@ -169,26 +217,56 @@ async function injectContentScript(tabId: number) {
   });
 }
 
-async function ensureTabMonitor(tabId: number) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: ["monitorBridge.js"],
-      world: "MAIN"
-    });
-    await chrome.tabs.sendMessage(tabId, { type: "DOM_AI_MONITOR_ENABLE" });
-  } catch {
-    // Browser internal pages and restricted documents cannot be scripted.
-  }
+function debugStorageKey(tabId: number) {
+  return `${DEBUG_STORAGE_PREFIX}${tabId}`;
 }
 
-async function ensureAgentBridgeHost(tabId: number) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: ["agentBridgeHost.js"]
-    });
-  } catch {
-    // Browser internal pages and restricted documents cannot be scripted.
+async function getDebugEvents(tabId: number): Promise<MonitorEvent[]> {
+  if (!tabId) return [];
+  const key = debugStorageKey(tabId);
+  const data = await chrome.storage.session.get(key);
+  return Array.isArray(data[key]) ? data[key] as MonitorEvent[] : [];
+}
+
+async function writeDebugEvents(tabId: number, events: MonitorEvent[]) {
+  if (!tabId) return;
+  await chrome.storage.session.set({ [debugStorageKey(tabId)]: events.slice(0, MAX_DEBUG_EVENTS) });
+  notifyDebugEventsChanged(tabId);
+}
+
+async function appendDebugEvent(tabId: number, event: MonitorEvent) {
+  if (!isPanelActive(tabId)) return;
+  const current = await getDebugEvents(tabId);
+  await writeDebugEvents(tabId, [event, ...current.filter((item) => item.id !== event.id)]);
+}
+
+async function setDebugEventsForKind(tabId: number, kind: MonitorEventKind, events: MonitorEvent[]) {
+  if (!isPanelActive(tabId)) return;
+  const current = await getDebugEvents(tabId);
+  const next = [
+    ...events,
+    ...current.filter((item) => item.kind !== kind)
+  ].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  await writeDebugEvents(tabId, next);
+}
+
+async function clearDebugEvents(tabId: number, kind?: MonitorEventKind) {
+  if (!kind) {
+    await writeDebugEvents(tabId, []);
+    return;
   }
+  const current = await getDebugEvents(tabId);
+  await writeDebugEvents(tabId, current.filter((item) => item.kind !== kind));
+}
+
+function notifyDebugEventsChanged(tabId: number) {
+  void chrome.tabs.sendMessage(tabId, { type: "DOM_AI_DEBUG_EVENTS_CHANGED" }).catch(() => undefined);
+}
+
+function isPanelActive(tabId: number) {
+  if (!tabId) return false;
+  const lastSeen = panelHeartbeats.get(tabId) ?? 0;
+  if (Date.now() - lastSeen <= PANEL_HEARTBEAT_TIMEOUT_MS) return true;
+  panelHeartbeats.delete(tabId);
+  return false;
 }

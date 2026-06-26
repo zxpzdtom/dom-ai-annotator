@@ -7,12 +7,11 @@ type BridgePayload =
 declare global {
   interface Window {
     __DOM_AI_MONITOR_BRIDGE_INSTALLED__?: boolean;
-    __DOM_AI_DEVTOOLS_CONSOLE__?: MonitorEvent[];
-    __DOM_AI_NETWORK_EVENTS__?: MonitorEvent[];
   }
 }
 
-const MAX_PREVIEW_LENGTH = 20000;
+const MAX_PREVIEW_LENGTH = 4000;
+const MAX_RESPONSE_PREVIEW_BYTES = 100000;
 
 if (!window.__DOM_AI_MONITOR_BRIDGE_INSTALLED__) {
   window.__DOM_AI_MONITOR_BRIDGE_INSTALLED__ = true;
@@ -326,7 +325,7 @@ function installResourceMonitor() {
         });
       }
     });
-    observer.observe({ type: "resource", buffered: true });
+    observer.observe({ type: "resource" });
   } catch {
     try {
       const observer = new PerformanceObserver((list) => {
@@ -439,11 +438,6 @@ function emit(event: Omit<MonitorEvent, "id" | "timestamp" | "pageUrl" | "title"
     title: document.title,
     ...event
   };
-  if (item.kind === "network") {
-    window.__DOM_AI_NETWORK_EVENTS__ = [item, ...(window.__DOM_AI_NETWORK_EVENTS__ || [])].slice(0, 200);
-  } else {
-    window.__DOM_AI_DEVTOOLS_CONSOLE__ = [item, ...(window.__DOM_AI_DEVTOOLS_CONSOLE__ || [])].slice(0, 600);
-  }
   post({
     source: "DOM_AI_MONITOR_BRIDGE",
     type: "event",
@@ -487,23 +481,16 @@ async function getRequestBodyPreview(input: RequestInfo | URL, init?: RequestIni
 async function getResponseBodyPreview(response: Response): Promise<string | undefined> {
   try {
     const type = response.headers.get("content-type") || "";
-    if (/^image\//i.test(type)) {
-      return await blobToDataUrl(await response.clone().blob());
-    }
+    if (/^image\//i.test(type)) return undefined;
     if (!/json|text|xml|html|javascript|form|graphql/i.test(type)) return undefined;
+    const contentLength = getContentLength(response.headers.get("content-length"));
+    if (contentLength && contentLength > MAX_RESPONSE_PREVIEW_BYTES) {
+      return `[response body ${contentLength} bytes skipped]`;
+    }
     return truncate(await response.clone().text());
   } catch {
     return undefined;
   }
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
@@ -548,24 +535,17 @@ function getBodyContentType(body: unknown): string {
 function getXhrResponseBody(xhr: XMLHttpRequest, url?: string): string | undefined {
   try {
     const contentType = xhr.getResponseHeader("content-type") || "";
-    if (/^image\//i.test(contentType)) {
-      if (xhr.response instanceof Blob) return URL.createObjectURL(xhr.response);
-      if (xhr.response instanceof ArrayBuffer) return arrayBufferToDataUrl(xhr.response, contentType);
-      return url;
-    }
+    if (/^image\//i.test(contentType)) return url;
     if (xhr.responseType && xhr.responseType !== "text" && xhr.responseType !== "json") return `[${xhr.responseType} response]`;
+    const contentLength = getContentLength(xhr.getResponseHeader("content-length"));
+    if (contentLength && contentLength > MAX_RESPONSE_PREVIEW_BYTES) {
+      return `[response body ${contentLength} bytes skipped]`;
+    }
     const response = xhr.responseType === "json" ? xhr.response : xhr.responseText;
     return formatValue(response);
   } catch {
     return undefined;
   }
-}
-
-function arrayBufferToDataUrl(buffer: ArrayBuffer, contentType: string): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-  return `data:${contentType.split(";")[0]};base64,${btoa(binary)}`;
 }
 
 function formatValue(value: unknown): string {
@@ -619,6 +599,12 @@ function getCircularReplacer() {
 
 function truncate(value: string) {
   return value.length > MAX_PREVIEW_LENGTH ? `${value.slice(0, MAX_PREVIEW_LENGTH)}...` : value;
+}
+
+function getContentLength(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const length = Number(value);
+  return Number.isFinite(length) && length > 0 ? length : undefined;
 }
 
 function getStack() {

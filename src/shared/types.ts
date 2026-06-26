@@ -146,4 +146,13 @@ export type RuntimeMessage =
   | { type: "DOM_AI_OPEN_SIDE_PANEL" }
   | { type: "DOM_AI_GET_FRAME_CONTEXT" }
   | { type: "DOM_AI_MONITOR_EVENT"; event: MonitorEvent }
+  | { type: "DOM_AI_RECORD_DEBUG_EVENT"; event: MonitorEvent }
+  | { type: "DOM_AI_SET_DEBUG_EVENTS"; tabId: number; kind: MonitorEventKind; events: MonitorEvent[] }
+  | { type: "DOM_AI_GET_DEBUG_EVENTS"; tabId?: number }
+  | { type: "DOM_AI_CLEAR_DEBUG_EVENTS"; tabId: number; kind?: MonitorEventKind }
+  | { type: "DOM_AI_DEBUG_EVENTS_CHANGED" }
+  | { type: "DOM_AI_GET_DEBUG_STORAGE_CONTEXT" }
+  | { type: "DOM_AI_PANEL_HEARTBEAT"; tabId: number }
+  | { type: "DOM_AI_PANEL_CLOSED"; tabId: number }
+  | { type: "DOM_AI_GET_PANEL_STATE"; tabId?: number }
   | { type: "DOM_AI_CAPTURE_SCREENSHOT"; rect?: { x: number; y: number; width: number; height: number } };

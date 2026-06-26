@@ -76,6 +76,11 @@ let _suspiciousRules: SuspiciousRule[] = [];
 
 const MAX_EVENTS = 600;
 const BODY_LIMIT = 3000;
+const MAX_BODY_CAPTURE_BYTES = 100_000;
+const MAX_BODY_READS_PER_SECOND = 12;
+const BODY_READ_MIN_INTERVAL_MS = 2000;
+const MAX_AGENT_NETWORK_EVENTS = 200;
+const NETWORK_SYNC_DELAY_MS = 500;
 const CONSOLE_LEVELS: MonitorSeverity[] = ["error", "warn", "log", "info"];
 const NETWORK_TYPES: Array<{ key: NetworkTypeFilter; label: string }> = [
   { key: "fetch-xhr", label: "Fetch/XHR" },
@@ -110,6 +115,9 @@ function App() {
   const [suspiciousRules, setSuspiciousRules] = useState<SuspiciousRule[]>([]);
   const [locale, setLocaleState] = useState<Locale>("en");
   const detailResizing = useRef<{ startX: number; startWidth: number } | null>(null);
+  const recentBodyReads = useRef<Map<string, number>>(new Map());
+  const bodyReadTicks = useRef<number[]>([]);
+  const networkSyncTimer = useRef<number | null>(null);
   const suspiciousOnly = view === "suspicious";
   const isSettingsView = view === "ignore-rules" || view === "suspicious-rules";
 
@@ -140,6 +148,7 @@ function App() {
   }
 
   useEffect(() => {
+    void ensureAgentBridgeForInspectedTab();
     installConsoleHook();
     const timer = window.setInterval(() => {
       readConsoleEvents().then((items) => setConsoleEvents(dedupeConsole(items).slice(0, MAX_EVENTS))).catch(() => undefined);
@@ -150,13 +159,33 @@ function App() {
   useEffect(() => {
     const devtools = chrome.devtools;
     const listener = (request: chrome.devtools.network.Request) => {
-      request.getContent((content, encoding) => {
+      const pushNetworkEvent = (content = "", encoding = "") => {
         setNetworkEvents((items) => [requestToMonitorEvent(request, content, encoding), ...items].slice(0, MAX_EVENTS));
-      });
+      };
+
+      if (!shouldReadResponseBody(request, recentBodyReads.current, bodyReadTicks.current)) {
+        pushNetworkEvent();
+        return;
+      }
+
+      request.getContent((content, encoding) => pushNetworkEvent(content, encoding));
     };
     devtools.network.onRequestFinished.addListener(listener);
     return () => devtools.network.onRequestFinished.removeListener(listener);
   }, []);
+
+  useEffect(() => {
+    if (networkSyncTimer.current) window.clearTimeout(networkSyncTimer.current);
+    const snapshot = networkEvents.slice(0, MAX_AGENT_NETWORK_EVENTS).map(toAgentNetworkEvent);
+    networkSyncTimer.current = window.setTimeout(() => {
+      storeNetworkEventsForInspectedTab(snapshot);
+      networkSyncTimer.current = null;
+    }, NETWORK_SYNC_DELAY_MS);
+    return () => {
+      if (networkSyncTimer.current) window.clearTimeout(networkSyncTimer.current);
+      networkSyncTimer.current = null;
+    };
+  }, [networkEvents]);
 
   const allEvents = view === "console" ? consoleEvents : view === "network" ? networkEvents : [];
   const suspicious = useMemo(() => [...consoleEvents, ...networkEvents].filter((e) => !isIgnored(e, ignoreRules) && isSuspicious(e)), [consoleEvents, networkEvents, ignoreRules, suspiciousRules]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -240,9 +269,10 @@ function App() {
       clearConsoleEvents();
       setConsoleEvents([]);
     } else if (view === "network") {
+      clearStoredDebugEvents("network");
       setNetworkEvents([]);
     } else {
-      clearConsoleEvents();
+      clearStoredDebugEvents();
       setConsoleEvents([]);
       setNetworkEvents([]);
     }
@@ -1103,33 +1133,63 @@ function installConsoleHook() {
   chrome.devtools.inspectedWindow.eval(`(${consoleHookSource})()`);
 }
 
+async function ensureAgentBridgeForInspectedTab() {
+  const tabId = chrome.devtools.inspectedWindow.tabId;
+  if (!tabId) return;
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ["agentBridge.js"],
+      world: "MAIN"
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ["agentBridgeHost.js"]
+    });
+  } catch {
+    // Restricted pages cannot be scripted; the DevTools panel can still show network/console data.
+  }
+}
+
 function readConsoleEvents(): Promise<MonitorEvent[]> {
   return new Promise((resolve, reject) => {
-    chrome.devtools.inspectedWindow.eval("window.__DOM_AI_DEVTOOLS_CONSOLE__ || []", (result, exceptionInfo) => {
-      if (exceptionInfo) reject(exceptionInfo);
-      else resolve(Array.isArray(result) ? result as MonitorEvent[] : []);
+    chrome.runtime.sendMessage({ type: "DOM_AI_GET_DEBUG_EVENTS", tabId: chrome.devtools.inspectedWindow.tabId }, (response?: { events?: MonitorEvent[] }) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+        return;
+      }
+      const events = Array.isArray(response?.events) ? response.events : [];
+      resolve(events.filter((event) => event.kind !== "network"));
     });
   });
 }
 
 function clearConsoleEvents() {
-  chrome.devtools.inspectedWindow.eval("window.__DOM_AI_DEVTOOLS_CONSOLE__ = []");
+  clearStoredDebugEvents("console");
+  clearStoredDebugEvents("error");
+}
+
+function clearStoredDebugEvents(kind?: MonitorEvent["kind"]) {
+  void chrome.runtime.sendMessage({
+    type: "DOM_AI_CLEAR_DEBUG_EVENTS",
+    tabId: chrome.devtools.inspectedWindow.tabId,
+    kind
+  });
 }
 
 function consoleHookSource() {
-  const win = window as Window & { __DOM_AI_DEVTOOLS_HOOKED__?: boolean; __DOM_AI_DEVTOOLS_CONSOLE__?: MonitorEvent[] };
-  if (win.__DOM_AI_DEVTOOLS_HOOKED__) return win.__DOM_AI_DEVTOOLS_CONSOLE__ || [];
+  const win = window as Window & { __DOM_AI_DEVTOOLS_HOOKED__?: boolean };
+  if (win.__DOM_AI_DEVTOOLS_HOOKED__) return true;
   win.__DOM_AI_DEVTOOLS_HOOKED__ = true;
-  win.__DOM_AI_DEVTOOLS_CONSOLE__ = win.__DOM_AI_DEVTOOLS_CONSOLE__ || [];
   const push = (event: Omit<MonitorEvent, "id" | "timestamp" | "pageUrl" | "title">) => {
-    win.__DOM_AI_DEVTOOLS_CONSOLE__!.unshift({
+    document.dispatchEvent(new CustomEvent("dom-ai-debug-console-event", { detail: {
       id: `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       timestamp: new Date().toISOString(),
       pageUrl: location.href,
       title: document.title,
       ...event
-    });
-    win.__DOM_AI_DEVTOOLS_CONSOLE__ = win.__DOM_AI_DEVTOOLS_CONSOLE__!.slice(0, 600);
+    } }));
   };
   const format = (value: unknown) => {
     try {
@@ -1156,12 +1216,12 @@ function consoleHookSource() {
   window.addEventListener("unhandledrejection", (event) => {
     push({ kind: "error", severity: "error", message: `Unhandled promise rejection: ${format(event.reason)}`, stack: event.reason instanceof Error ? event.reason.stack : undefined });
   }, true);
-  return win.__DOM_AI_DEVTOOLS_CONSOLE__;
+  return true;
 }
 
 function requestToMonitorEvent(request: chrome.devtools.network.Request, content: string, encoding: string): MonitorEvent {
   const mime = request.response.content.mimeType || "";
-  const body = shouldKeepBody(mime) ? truncate(encoding === "base64" ? `[base64 ${content.length} chars omitted]` : content, BODY_LIMIT) : "";
+  const body = content && shouldKeepBody(mime) ? truncate(encoding === "base64" ? `[base64 ${content.length} chars omitted]` : content, BODY_LIMIT) : "";
   const url = request.request.url;
   const status = request.response.status || undefined;
   return {
@@ -1184,6 +1244,55 @@ function requestToMonitorEvent(request: chrome.devtools.network.Request, content
     durationMs: Math.round(request.time || 0),
     ok: Boolean(status && status >= 200 && status < 400)
   };
+}
+
+function toAgentNetworkEvent(event: MonitorEvent): MonitorEvent {
+  return {
+    ...event,
+    requestBody: truncate(event.requestBody || "", BODY_LIMIT) || undefined,
+    responseBody: truncate(event.responseBody || "", BODY_LIMIT) || undefined,
+  };
+}
+
+function storeNetworkEventsForInspectedTab(events: MonitorEvent[]) {
+  void chrome.runtime.sendMessage({
+    type: "DOM_AI_SET_DEBUG_EVENTS",
+    tabId: chrome.devtools.inspectedWindow.tabId,
+    kind: "network",
+    events
+  });
+}
+
+function shouldReadResponseBody(
+  request: chrome.devtools.network.Request,
+  recentReads: Map<string, number>,
+  readTicks: number[]
+): boolean {
+  const mime = request.response.content.mimeType || "";
+  if (!shouldKeepBody(mime)) return false;
+
+  const contentSize = request.response.content.size || 0;
+  if (contentSize > MAX_BODY_CAPTURE_BYTES) return false;
+
+  const now = Date.now();
+  while (readTicks.length && now - readTicks[0] > 1000) readTicks.shift();
+  if (readTicks.length >= MAX_BODY_READS_PER_SECOND) return false;
+
+  const status = request.response.status || 0;
+  const urlKey = `${request.request.method || "GET"} ${request.request.url.split("#")[0]}`;
+  const lastRead = recentReads.get(urlKey) ?? 0;
+  const likelyImportant = !status || status >= 400 || request.time >= 3000 || request.request.method !== "GET";
+
+  if (!likelyImportant && now - lastRead < BODY_READ_MIN_INTERVAL_MS) return false;
+
+  recentReads.set(urlKey, now);
+  readTicks.push(now);
+  if (recentReads.size > 500) {
+    for (const [key, timestamp] of recentReads) {
+      if (now - timestamp > 60_000) recentReads.delete(key);
+    }
+  }
+  return true;
 }
 
 function headersToObject(headers: chrome.devtools.network.Request["request"]["headers"]): Record<string, string> {

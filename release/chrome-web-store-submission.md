@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.0.zip`
-- Version: `0.3.0`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.1.zip`
+- Version: `0.3.1`
 
 ## Listing
 
@@ -51,6 +51,7 @@ DOM Review 是一个 Chrome 侧边栏工具，用来在真实网页上选择 DOM
 - `tabs`: 获取当前标签页 URL 和标题，用于把标注归属到对应页面。
 - `activeTab`: 用户主动点击扩展后，与当前页面交互。
 - `scripting`: 用户主动打开面板或点击工具后，在当前页面按需注入内容脚本，用于选择元素、定位标注和测量距离。
+- `webNavigation`: 侧栏打开时监听当前标签页中的 iframe 和 SPA 导航，在嵌套页面延迟加载后按需补充注入内容脚本并刷新标注显示。
 - `<all_urls>` host permission: 允许用户在任意普通网页和本地 file 页面进行 DOM 标注和测量。内容脚本仍然只在用户打开面板或点击工具后按需注入。
 
 The extension does not request `clipboardRead` or `clipboardWrite`. Clipboard import is manual paste into the extension UI. Clipboard export is attempted only after the user clicks copy, using the browser Clipboard API.
@@ -80,3 +81,9 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.1 Review Notes
+
+- Content scripts are no longer registered in `manifest.content_scripts`; they are injected on demand after the user opens the side panel or starts a tool.
+- The page annotation layer is hidden by default after reload and becomes visible only while the side panel activates it. Saved annotations remain in local storage.
+- AI Debug collection runs only from the DevTools panel path and stores debug events in temporary `chrome.storage.session`.

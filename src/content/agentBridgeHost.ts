@@ -5,8 +5,8 @@
  * executes operations on chrome.storage, and writes responses back
  * via DOM attributes.
  *
- * Also syncs annotation data to a hidden <script> DOM element so the
- * MAIN world agentBridge can read it synchronously.
+ * It keeps a lightweight annotation cache in the ISOLATED world so the
+ * MAIN world agentBridge can read it synchronously through the event bridge.
  *
  * NOTE: This file must be self-contained (no imports from other modules)
  * because it is injected via chrome.scripting.executeScript which does not
@@ -16,8 +16,10 @@
 const REQUEST_ATTR = "data-dom-ai-request";
 const RESPONSE_ATTR = "data-dom-ai-response";
 const REQUEST_EVENT = "dom-ai-api-request";
-const DATA_ELEMENT_ID = "dom-ai-data";
+const LOCATION_CHANGE_EVENT = "dom-ai-location-change";
+const DEBUG_CONSOLE_EVENT = "dom-ai-debug-console-event";
 const STORAGE_KEY = "domAiAnnotations";
+const HOST_INSTALLED_KEY = "__DOM_AI_AGENT_BRIDGE_HOST_INSTALLED__";
 
 type AnnotationStatus = "pending" | "sent" | "changed" | "needs_work" | "passed" | "skipped";
 
@@ -51,6 +53,17 @@ interface StoredAnnotation {
   id: string;
   url: string;
   status: string;
+  [key: string]: unknown;
+}
+
+interface DebugEvent {
+  id: string;
+  kind: string;
+  severity: string;
+  timestamp: string;
+  pageUrl: string;
+  title: string;
+  message: string;
   [key: string]: unknown;
 }
 
@@ -121,40 +134,64 @@ async function captureAfterForAnnotation(id: string): Promise<void> {
 // --- DOM Data Sync ---
 
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
-let hostInitialized = false;
+let cachedPayload: Record<string, unknown> = {
+  version: "1.0",
+  page: location.href,
+  title: document.title,
+  updatedAt: new Date().toISOString(),
+  annotations: [],
+  debugEvents: [],
+  api: API_DESCRIPTOR
+};
+let cachedDebugEvents: DebugEvent[] = [];
 
 function scheduleDomSync() {
   if (syncTimer) clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => void syncAnnotationsToDom(), 300);
+  syncTimer = setTimeout(() => void syncAnnotationsCache(), 300);
 }
 
-async function syncAnnotationsToDom() {
+async function syncAnnotationsCache() {
   try {
     const annotations = await getAllAnnotations();
-    const pageAnnotations = annotations.filter((a) => a.url === location.href);
+    const pageAnnotations = annotations
+      .filter((a) => a.url === location.href)
+      .map(stripLargeAnnotationFields);
 
-    let el = document.getElementById(DATA_ELEMENT_ID) as HTMLScriptElement | null;
-    if (!el) {
-      el = document.createElement("script");
-      el.type = "application/json";
-      el.id = DATA_ELEMENT_ID;
-      el.style.display = "none";
-      (document.body || document.documentElement).appendChild(el);
-    }
-
-    const payload = {
+    cachedPayload = {
       version: "1.0",
       page: location.href,
       title: document.title,
       updatedAt: new Date().toISOString(),
       annotations: pageAnnotations,
+      debugEvents: cachedDebugEvents,
       api: API_DESCRIPTOR
     };
-
-    el.textContent = JSON.stringify(payload, null, 2);
   } catch (e) {
-    console.warn("[DOM AI] Failed to sync annotations to DOM:", e);
+    console.warn("[DOM AI] Failed to sync annotations cache:", e);
   }
+}
+
+function syncDebugEventsCache() {
+  chrome.runtime.sendMessage({ type: "DOM_AI_GET_DEBUG_EVENTS" }, (response?: { events?: DebugEvent[] }) => {
+    if (chrome.runtime.lastError) return;
+    cachedDebugEvents = Array.isArray(response?.events) ? response.events : [];
+    cachedPayload = {
+      ...cachedPayload,
+      debugEvents: cachedDebugEvents,
+      updatedAt: new Date().toISOString()
+    };
+  });
+}
+
+function handleDebugConsoleEvent(event: Event) {
+  const detail = (event as CustomEvent<DebugEvent>).detail;
+  if (!detail || typeof detail !== "object") return;
+  void chrome.runtime.sendMessage({ type: "DOM_AI_RECORD_DEBUG_EVENT", event: detail });
+}
+
+function stripLargeAnnotationFields(annotation: StoredAnnotation): StoredAnnotation {
+  const { screenshot: _screenshot, screenshotAfter: _screenshotAfter, ...rest } = annotation;
+  return rest;
 }
 
 // --- Request Handler ---
@@ -175,6 +212,11 @@ function handleRequest() {
 
   try {
     switch (method) {
+      case "getDomData": {
+        respond(requestId, true, cachedPayload);
+        break;
+      }
+
       case "resolveAnnotation": {
         const id = params.id as string;
         if (!id) {
@@ -243,17 +285,23 @@ function respond(requestId: string | null, success: boolean, data?: unknown, err
 // --- Init ---
 
 function initAgentBridgeHost() {
-  if (hostInitialized) return;
-  hostInitialized = true;
+  const hostGlobal = globalThis as typeof globalThis & Record<string, unknown>;
+  if (hostGlobal[HOST_INSTALLED_KEY]) return;
+  hostGlobal[HOST_INSTALLED_KEY] = true;
 
   // Listen for API requests from MAIN world
   document.addEventListener(REQUEST_EVENT, handleRequest);
+  document.addEventListener(DEBUG_CONSOLE_EVENT, handleDebugConsoleEvent);
 
   // Initial sync
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => void syncAnnotationsToDom());
+    document.addEventListener("DOMContentLoaded", () => {
+      void syncAnnotationsCache();
+      syncDebugEventsCache();
+    });
   } else {
-    void syncAnnotationsToDom();
+    void syncAnnotationsCache();
+    syncDebugEventsCache();
   }
 
   // Re-sync when storage changes
@@ -263,15 +311,12 @@ function initAgentBridgeHost() {
     }
   });
 
-  // Re-sync on SPA navigation
-  let lastUrl = location.href;
-  const observer = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      scheduleDomSync();
-    }
+  chrome.runtime.onMessage.addListener((message: { type?: string }) => {
+    if (message.type === "DOM_AI_DEBUG_EVENTS_CHANGED") syncDebugEventsCache();
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  // MAIN world agentBridge emits this when History API or hash navigation changes the URL.
+  document.addEventListener(LOCATION_CHANGE_EVENT, scheduleDomSync);
 }
 
 initAgentBridgeHost();
