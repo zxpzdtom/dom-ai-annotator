@@ -86,6 +86,7 @@ const filterLabels: Record<StatusFilter, string> = {
 };
 
 function App() {
+  const [panelDocumentVisible, setPanelDocumentVisible] = useState(() => document.visibilityState !== "hidden");
   const [tab, setTab] = useState<ActiveTab | null>(null);
   const [annotations, setAnnotations] = useState<DomAnnotation[]>([]);
   const [copied, setCopied] = useState(false);
@@ -112,6 +113,20 @@ function App() {
   const [monitorCopied, setMonitorCopied] = useState(false);
   const [networkSort, setNetworkSort] = useState<NetworkSortState>(null);
   const [activeFrameContext, setActiveFrameContext] = useState<PageContext | null>(null);
+
+  useEffect(() => {
+    const syncVisibility = () => {
+      setPanelDocumentVisible(document.visibilityState !== "hidden");
+    };
+
+    document.addEventListener("visibilitychange", syncVisibility);
+    window.addEventListener("pageshow", syncVisibility);
+    syncVisibility();
+    return () => {
+      document.removeEventListener("visibilitychange", syncVisibility);
+      window.removeEventListener("pageshow", syncVisibility);
+    };
+  }, []);
 
   const loadTab = useCallback(async () => {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -269,10 +284,11 @@ function App() {
   );
   const selectedCount = selectedIds.length;
   const canMountContent = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded);
-  const canInspect = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded && isViewingActivePage);
+  const canExposePageUi = canMountContent && panelDocumentVisible;
+  const canInspect = Boolean(tab?.id && tab.url && canExposePageUi && isViewingActivePage);
 
   useEffect(() => {
-    if (!tab?.id || !canMountContent) return;
+    if (!tab?.id || !canExposePageUi) return;
     const tabId = tab.id;
     void ensureContentScript(tabId).then(async () => {
       await setContentPanelVisible(tabId, true);
@@ -281,10 +297,10 @@ function App() {
     }).catch(() => {
       // Tool actions surface injection failures. Initial pin rendering can fail silently.
     });
-  }, [canInspect, canMountContent, pageLoadTick, panelMode, tab?.id]);
+  }, [canExposePageUi, canInspect, pageLoadTick, panelMode, tab?.id]);
 
   useEffect(() => {
-    if (!tab?.id || !canMountContent) return;
+    if (!tab?.id || !canExposePageUi) return;
     const tabId = tab.id;
     const heartbeat = () => {
       void chrome.runtime.sendMessage({ type: "DOM_AI_PANEL_HEARTBEAT", tabId }).catch(() => undefined);
@@ -305,10 +321,10 @@ function App() {
       window.removeEventListener("beforeunload", close);
       close();
     };
-  }, [canMountContent, tab?.id]);
+  }, [canExposePageUi, tab?.id]);
 
   useEffect(() => {
-    if (!tab?.id || !canMountContent || !isViewingActivePage) return;
+    if (!tab?.id || !canExposePageUi || !isViewingActivePage) return;
     const tabId = tab.id;
     const timers = CONTENT_MOUNT_RETRY_DELAYS.map((delayMs) =>
       window.setTimeout(() => {
@@ -319,10 +335,10 @@ function App() {
       }, delayMs)
     );
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [canMountContent, isViewingActivePage, pageAnnotations.length, pageLoadTick, tab?.id, viewedUrl]);
+  }, [canExposePageUi, isViewingActivePage, pageAnnotations.length, pageLoadTick, tab?.id, viewedUrl]);
 
   useEffect(() => {
-    if (!tab?.id || !canMountContent || !isViewingActivePage) return;
+    if (!tab?.id || !canExposePageUi || !isViewingActivePage) return;
     const tabId = tab.id;
     const handleFrameNavigation = (details: { tabId: number; url?: string }) => {
       if (details.tabId !== tabId) return;
@@ -342,7 +358,7 @@ function App() {
       chrome.webNavigation.onCompleted.removeListener(handleFrameNavigation);
       chrome.webNavigation.onHistoryStateUpdated.removeListener(handleFrameNavigation);
     };
-  }, [canMountContent, isViewingActivePage, tab?.id, viewedUrl]);
+  }, [canExposePageUi, isViewingActivePage, tab?.id, viewedUrl]);
 
   useEffect(() => {
     setMonitorEvents([]);

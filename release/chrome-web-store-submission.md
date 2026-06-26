@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.1.zip`
-- Version: `0.3.1`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.2.zip`
+- Version: `0.3.2`
 
 ## Listing
 
@@ -81,6 +81,12 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.2 Review Notes
+
+- Fixes an issue where the page annotation capsule could occasionally reappear after the Chrome side panel was closed and the page was refreshed.
+- The page annotation layer is now exposed only while the side panel document is visible; automatic content injection, heartbeat, and navigation listeners stop when the side panel is hidden.
+- Saved annotations remain in local Chrome storage and are not deleted when the side panel closes.
 
 ## 0.3.1 Review Notes
 
