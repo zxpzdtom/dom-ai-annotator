@@ -1,4 +1,4 @@
-import type { DomAnnotation } from "./types";
+import type { AnnotationReference, DomAnnotation } from "./types";
 import { normalizeStatus } from "./storage";
 import { severityLabels, statusLabels } from "./status";
 
@@ -6,7 +6,10 @@ export function exportAnnotationsAsJson(annotations: DomAnnotation[]): string {
   return JSON.stringify(stripScreenshots(annotations), null, 2);
 }
 
-export function exportAnnotationsAsMarkdown(annotations: DomAnnotation[]): string {
+export function exportAnnotationsAsMarkdown(
+  annotations: DomAnnotation[],
+  options: { includeImportPayload?: boolean } = {}
+): string {
   const visible = stripScreenshots(annotations).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   return [
@@ -15,7 +18,7 @@ export function exportAnnotationsAsMarkdown(annotations: DomAnnotation[]): strin
     "请修复下面的 UI 反馈。请结合 selector、DOM 上下文、元素位置和视觉说明定位相关组件。修改完成后，总结哪些标注已解决，并说明无法安全修改的内容。",
     "",
     ...visible.flatMap((item, index) => [
-      `## ${index + 1}. ${item.feedback.comment.split("\n")[0] || "未命名反馈"}`,
+      `## ${index + 1}. ${formatAnnotationHeading(item)}`,
       "",
       `- 状态: ${statusLabels[normalizeStatus(item.status)]}`,
       `- URL: ${item.url}`,
@@ -28,12 +31,27 @@ export function exportAnnotationsAsMarkdown(annotations: DomAnnotation[]): strin
       `- 视口: ${item.viewport.width}x${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
       `- 优先级: ${severityLabels[item.feedback.severity]}`,
       `- 关键样式: ${formatKeyStyles(item)}`,
+      item.references?.length ? `- 引用对象: ${item.references.map((reference) => reference.label).join(", ")}` : undefined,
       "",
+      "**反馈**",
+      "",
+      item.feedback.comment,
+      "",
+      item.references?.length ? "**涉及对象**" : undefined,
+      item.references?.length ? "" : undefined,
+      item.references?.length ? formatReferencedObjects(item) : undefined,
+      item.references?.length ? "" : undefined,
       item.feedback.expected ? "**期望效果**" : undefined,
       item.feedback.expected ? "" : undefined,
       item.feedback.expected,
       ""
-    ].filter(Boolean) as string[])
+    ].filter(Boolean) as string[]),
+    ...(options.includeImportPayload ? [
+      "",
+      "<!-- DOM_AI_ANNOTATIONS_START",
+      encodeAnnotationsPayload(visible),
+      "DOM_AI_ANNOTATIONS_END -->"
+    ] : [])
   ].join("\n");
 }
 
@@ -77,6 +95,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
     const status = parseStatusLabel(getMarkdownBullet(body, "状态"));
     const computedStyles = parseKeyStyles(getMarkdownBullet(body, "关键样式"));
     const expected = getMarkdownBlock(body, "期望效果");
+    const references = parseReferencedObjects(getMarkdownBlock(body, "涉及对象"), getMarkdownBullet(body, "页面标题") || "未命名页面");
 
     annotations.push({
       id: createReadableMarkdownAnnotationId(url, selector, comment, annotations.length),
@@ -96,6 +115,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
         type: "bug",
         severity
       },
+      references: references.length ? references : undefined,
       status
     });
   }
@@ -109,6 +129,17 @@ function stripScreenshots(annotations: DomAnnotation[]): DomAnnotation[] {
     screenshot: undefined,
     screenshotAfter: undefined
   }));
+}
+
+function formatAnnotationHeading(annotation: DomAnnotation): string {
+  const target = describeElement(annotation);
+  const referenceCount = annotation.references?.length ?? 0;
+  if (referenceCount) return `组合反馈 · ${target} · 引用 ${referenceCount} 个对象`;
+  return target || "未命名反馈";
+}
+
+function encodeAnnotationsPayload(annotations: DomAnnotation[]): string {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(annotations))));
 }
 
 function getMarkdownBullet(markdown: string, label: string): string | undefined {
@@ -193,6 +224,46 @@ function parseKeyStyles(value?: string): Record<string, string> {
   }, {});
 }
 
+function parseReferencedObjects(markdown: string | undefined, fallbackTitle: string): AnnotationReference[] {
+  if (!markdown) return [];
+
+  const references: AnnotationReference[] = [];
+  const headings = Array.from(markdown.matchAll(/^###\s+(.+?)\s*$/gm));
+
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index];
+    const headingText = heading[1].trim();
+    const label = headingText.match(/^(对象\s+\d+)/)?.[1];
+    if (!label || label === "对象 1") continue;
+
+    const bodyStart = heading.index + heading[0].length;
+    const bodyEnd = headings[index + 1]?.index ?? markdown.length;
+    const body = markdown.slice(bodyStart, bodyEnd);
+    const url = getMarkdownBullet(body, "URL");
+    const selector = getMarkdownCodeBullet(body, "Selector");
+    const rect = parseMarkdownRect(getMarkdownBullet(body, "位置"));
+    const viewport = parseMarkdownViewport(getMarkdownBullet(body, "视口"));
+
+    if (!url || !selector || !rect || !viewport) continue;
+
+    references.push({
+      id: createReadableMarkdownAnnotationId(url, selector, label, references.length),
+      label,
+      role: "reference",
+      url,
+      title: fallbackTitle,
+      selector,
+      xpath: getMarkdownCodeBullet(body, "XPath"),
+      element: parseMarkdownElement(getMarkdownCodeBullet(body, "元素")),
+      rect,
+      viewport,
+      computedStyles: parseKeyStyles(getMarkdownBullet(body, "关键样式"))
+    });
+  }
+
+  return references;
+}
+
 function normalizeExportedStyleName(name?: string): string | undefined {
   const styleNames: Record<string, string> = {
     "font-size": "fontSize",
@@ -254,6 +325,57 @@ function formatPageContext(annotation: DomAnnotation): string {
 
 function formatKeyStyles(annotation: DomAnnotation): string {
   const styles = annotation.computedStyles;
+  const entries = [
+    ["display", styles.display],
+    ["position", styles.position],
+    ["font-size", styles.fontSize],
+    ["line-height", styles.lineHeight],
+    ["font-weight", styles.fontWeight],
+    ["color", styles.color],
+    ["background", styles.backgroundColor],
+    ["margin", styles.margin],
+    ["padding", styles.padding],
+    ["gap", styles.gap],
+    ["border-radius", styles.borderRadius],
+    ["opacity", styles.opacity],
+    ["z-index", styles.zIndex]
+  ].filter(([, value]) => value && value !== "normal" && value !== "none" && value !== "auto");
+
+  return entries.map(([key, value]) => `${key}=${value}`).join("; ") || "无关键样式快照";
+}
+
+function formatReferencedObjects(annotation: DomAnnotation): string {
+  return [
+    formatObjectDetails("对象 1（修改目标）", annotation),
+    ...(annotation.references ?? []).map((reference) => formatObjectDetails(`${reference.label}（参考对象）`, reference))
+  ].join("\n\n");
+}
+
+function formatObjectDetails(
+  title: string,
+  item: Pick<DomAnnotation, "selector" | "xpath" | "element" | "rect" | "viewport" | "computedStyles" | "url">
+): string {
+  return [
+    `### ${title}`,
+    "",
+    `- URL: ${item.url}`,
+    `- Selector: \`${item.selector}\``,
+    item.xpath ? `- XPath: \`${item.xpath}\`` : undefined,
+    `- 元素: \`${describeElementLike(item.element)}\``,
+    `- 位置: x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, width=${Math.round(item.rect.width)}, height=${Math.round(item.rect.height)}`,
+    `- 视口: ${item.viewport.width}x${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
+    `- 关键样式: ${formatStyleSnapshot(item.computedStyles)}`
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function describeElementLike(element: DomAnnotation["element"]): string {
+  const id = element.id ? `#${element.id}` : "";
+  const classes = element.className ? `.${element.className.trim().split(/\s+/).slice(0, 4).join(".")}` : "";
+  const label = element.ariaLabel || element.role || element.text;
+  return `${element.tag}${id}${classes}${label ? ` (${label.slice(0, 80)})` : ""}`;
+}
+
+function formatStyleSnapshot(styles: Record<string, string>): string {
   const entries = [
     ["display", styles.display],
     ["position", styles.position],

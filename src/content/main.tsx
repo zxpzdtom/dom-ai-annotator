@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown, Code2, MessageCircle, Palette, Ruler, Trash2, Type, X } from "lucide-react";
+import { ChevronDown, Code2, Link2, MessageCircle, Palette, Ruler, Trash2, Type, X } from "lucide-react";
 import cssText from "./content.css?inline";
 import { createAnnotationDraft, getCssSelector, querySelectorDeep } from "./selector";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationPinAnchor, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationReference, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { writeClipboardText } from "../shared/clipboard";
@@ -44,6 +44,23 @@ type ComposerState = {
   inspection: HoverInspection;
   initialScreenshot?: AnnotationScreenshot;
   editingAnnotation?: DomAnnotation;
+};
+
+type PendingAnnotationReference = AnnotationReference & {
+  nonce: number;
+};
+
+type ReferenceEditorToken = {
+  id: string;
+  label: string;
+  title: string;
+  referenceId?: string;
+  removable: boolean;
+};
+
+type ReferenceTextEditorHandle = {
+  focus: () => void;
+  insertToken: (token: ReferenceEditorToken) => void;
 };
 
 type HoverInspection = {
@@ -200,9 +217,12 @@ function App() {
   const [measurePaused, setMeasurePaused] = useState(false);
   const [pinnedMeasurements, setPinnedMeasurements] = useState<PinnedMeasurement[]>([]);
   const [composer, setComposer] = useState<ComposerState | null>(null);
+  const [referencePickingLabel, setReferencePickingLabel] = useState<string | null>(null);
+  const [pendingReference, setPendingReference] = useState<PendingAnnotationReference | null>(null);
   const [resumePickingAfterComposer, setResumePickingAfterComposer] = useState(false);
   const [annotations, setAnnotations] = useState<DomAnnotation[]>([]);
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
+  const [focusedReference, setFocusedReference] = useState<AnnotationReference | null>(null);
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<string | null>(null);
   const [documentSize, setDocumentSize] = useState<DocumentSize>(() => getDocumentSize());
   const [viewportOffset, setViewportOffset] = useState<ViewportOffset>(() => ({ x: window.scrollX, y: window.scrollY }));
@@ -221,8 +241,11 @@ function App() {
     setMeasurePaused(false);
     setPinnedMeasurements([]);
     setComposer(null);
+    setReferencePickingLabel(null);
+    setPendingReference(null);
     setResumePickingAfterComposer(false);
     setFocusedAnnotationId(null);
+    setFocusedReference(null);
     setHoveredAnnotationId(null);
     setToolbarDismissed(false);
     document.getElementById("dom-ai-img-preview")?.remove();
@@ -298,6 +321,7 @@ function App() {
       if (message.type === "DOM_AI_START_PICKING") {
         setPanelVisible(true);
         setMeasuring(false);
+        setReferencePickingLabel(null);
         setResumePickingAfterComposer(false);
         setMeasureAnchor(null);
         setMeasureHover(null);
@@ -312,6 +336,7 @@ function App() {
         setPanelVisible(true);
         setPicking(false);
         setComposer(null);
+        setReferencePickingLabel(null);
         setResumePickingAfterComposer(false);
         setMeasureAnchor(null);
         setMeasureHover(null);
@@ -332,6 +357,10 @@ function App() {
       if (message.type === "DOM_AI_FOCUS_ANNOTATION") {
         setPanelVisible(true);
         focusAndHighlightAnnotation(message.id, annotations);
+      }
+      if (message.type === "DOM_AI_FOCUS_REFERENCE") {
+        setPanelVisible(true);
+        focusAndHighlightReference(message.reference);
       }
       if (message.type === "DOM_AI_EDIT_ANNOTATION") {
         setPanelVisible(true);
@@ -358,7 +387,7 @@ function App() {
   }, [annotations, refreshAnnotations, setPanelVisible]);
 
   useEffect(() => {
-    const cursor = panelActive && isPicking ? COMMENT_CURSOR : panelActive && isMeasuring && !measurePaused ? "crosshair" : "";
+    const cursor = panelActive && (isPicking || referencePickingLabel) ? COMMENT_CURSOR : panelActive && isMeasuring && !measurePaused ? "crosshair" : "";
     document.body.style.cursor = cursor;
     document.documentElement.style.cursor = cursor;
 
@@ -366,7 +395,7 @@ function App() {
       document.body.style.cursor = "";
       document.documentElement.style.cursor = "";
     };
-  }, [isMeasuring, isPicking, measurePaused, panelActive]);
+  }, [isMeasuring, isPicking, measurePaused, panelActive, referencePickingLabel]);
 
   useEffect(() => {
     if (!panelActive) return;
@@ -483,6 +512,82 @@ function App() {
   }, [isPicking, panelActive]);
 
   useEffect(() => {
+    if (!panelActive || !referencePickingLabel || !composer) {
+      if (!isPicking) setHoverInspection(null);
+      return;
+    }
+
+    const onMove = (event: MouseEvent) => {
+      notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
+      const element = getTargetElement(event);
+      if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setHoverInspection(null);
+        return;
+      }
+      setDocumentSize(getDocumentSize());
+      setHoverInspection(getElementInspection(element));
+    };
+
+    const onPointerDown = async (event: PointerEvent) => {
+      if (!isPrimaryPointerSelection(event)) return;
+      if (isInjectedEvent(event)) return;
+      const element = getTargetElement(event);
+      if (!element) return;
+      if (shouldDeferPointerToEmbeddedContent(event)) {
+        setHoverInspection(null);
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextPageClick();
+      const context = getAnnotationPageContext(element, await getFramePageContext());
+      void chrome.runtime.sendMessage({ type: "DOM_AI_PAGE_CONTEXT_SELECTED", context });
+      setPendingReference({
+        ...createAnnotationReference(element, referencePickingLabel, context),
+        nonce: Date.now()
+      });
+      setReferencePickingLabel(null);
+      setHoverInspection(null);
+    };
+
+    const onClick = (event: MouseEvent) => {
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const onOut = (event: MouseEvent) => {
+      if (isPointerLeavingForEmbeddedContent(event)) setHoverInspection(null);
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setReferencePickingLabel(null);
+      setHoverInspection(null);
+    };
+
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseout", onOut, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", onKey, true);
+
+    return () => {
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseout", onOut, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [composer, isPicking, panelActive, pageContext, referencePickingLabel]);
+
+  useEffect(() => {
     if (!panelActive || !isMeasuring || measurePaused) {
       setMeasureAnchor(null);
       setMeasureHover(null);
@@ -573,6 +678,7 @@ function App() {
 
   function closeComposer() {
     setComposer(null);
+    setReferencePickingLabel(null);
     if (resumePickingAfterComposer) setPicking(true);
     setResumePickingAfterComposer(false);
   }
@@ -580,9 +686,21 @@ function App() {
   function focusAndHighlightAnnotation(id: string, items: DomAnnotation[]) {
     focusAnnotation(id, items);
     setFocusedAnnotationId(id);
+    setFocusedReference(null);
     if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
     focusTimerRef.current = window.setTimeout(() => {
       setFocusedAnnotationId(null);
+      focusTimerRef.current = null;
+    }, 1600);
+  }
+
+  function focusAndHighlightReference(reference: AnnotationReference) {
+    focusReference(reference);
+    setFocusedReference(reference);
+    setFocusedAnnotationId(null);
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => {
+      setFocusedReference(null);
       focusTimerRef.current = null;
     }, 1600);
   }
@@ -591,6 +709,7 @@ function App() {
     const annotation = items.find((item) => item.id === id);
     if (!annotation) return;
     setPicking(false);
+    setReferencePickingLabel(null);
     setResumePickingAfterComposer(false);
     setMeasuring(false);
     setMeasureAnchor(null);
@@ -606,6 +725,7 @@ function App() {
 
   function startPickingMode() {
     setComposer(null);
+    setReferencePickingLabel(null);
     setResumePickingAfterComposer(false);
     setMeasuring(false);
     setMeasureAnchor(null);
@@ -616,6 +736,7 @@ function App() {
 
   function startMeasuringMode() {
     setComposer(null);
+    setReferencePickingLabel(null);
     setResumePickingAfterComposer(false);
     setPicking(false);
     setMeasureAnchor(null);
@@ -651,6 +772,7 @@ function App() {
 
   function stopCurrentMode() {
     setPicking(false);
+    setReferencePickingLabel(null);
     setResumePickingAfterComposer(false);
     setMeasuring(false);
     setMeasureAnchor(null);
@@ -670,7 +792,7 @@ function App() {
           transform: `translate(${-viewportOffset.x}px, ${-viewportOffset.y}px)`
         }}
       >
-        {isPicking && hoverInspection ? (
+        {(isPicking || referencePickingLabel) && hoverInspection ? (
           <>
             <div
               className="dom-ai-highlight"
@@ -678,9 +800,13 @@ function App() {
             />
             <div
               className="dom-ai-hover-label"
-              style={getHoverLabelStyle(hoverInspection, hoverInspection.label, `${Math.round(hoverInspection.documentRect.width)} x ${Math.round(hoverInspection.documentRect.height)}`)}
+              style={getHoverLabelStyle(
+                hoverInspection,
+                referencePickingLabel ? `引用为${referencePickingLabel}` : hoverInspection.label,
+                `${Math.round(hoverInspection.documentRect.width)} x ${Math.round(hoverInspection.documentRect.height)}`
+              )}
             >
-              <span>{hoverInspection.label}</span>
+              <span>{referencePickingLabel ? `引用为${referencePickingLabel}` : hoverInspection.label}</span>
               <b>{Math.round(hoverInspection.documentRect.width)} x {Math.round(hoverInspection.documentRect.height)}</b>
             </div>
           </>
@@ -698,6 +824,10 @@ function App() {
 
         {focusedAnnotationId ? (
           <FocusedAnnotationOverlay annotation={sortedAnnotations.find((item) => item.id === focusedAnnotationId)} />
+        ) : null}
+
+        {focusedReference ? (
+          <FocusedReferenceOverlay reference={focusedReference} />
         ) : null}
 
         {hoveredAnnotationId && hoveredAnnotationId !== focusedAnnotationId ? (
@@ -735,7 +865,21 @@ function App() {
           />
         ) : null}
 
-        {composer ? <Composer state={composer} onCancel={closeComposer} onSaved={() => {
+        {composer ? <Composer
+          state={composer}
+          pendingReference={pendingReference}
+          referencePicking={Boolean(referencePickingLabel)}
+          onPickReference={(label) => {
+            setPicking(false);
+            setMeasuring(false);
+            setMeasureAnchor(null);
+            setMeasureHover(null);
+            setMeasurePaused(false);
+            setReferencePickingLabel(label);
+          }}
+          onReferenceConsumed={() => setPendingReference(null)}
+          onCancel={closeComposer}
+          onSaved={() => {
           closeComposer();
           void refreshAnnotations();
         }} onDeleted={() => {
@@ -1161,23 +1305,64 @@ function FocusedAnnotationOverlay({ annotation, subtle = false }: { annotation?:
   );
 }
 
+function FocusedReferenceOverlay({ reference }: { reference?: AnnotationReference }) {
+  if (!reference) return null;
+  const rect = getReferenceDocumentRect(reference);
+  const borderRadius = getReferenceBorderRadius(reference);
+  return (
+    <div
+      className="dom-ai-focused-annotation"
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
+        borderRadius,
+        "--dom-ai-focus-color": "#0f9f78",
+        "--dom-ai-focus-glow": "rgba(15, 159, 120, 0.24)"
+      } as React.CSSProperties}
+    />
+  );
+}
+
 function Composer({
   state,
+  pendingReference,
+  referencePicking,
+  onPickReference,
+  onReferenceConsumed,
   onCancel,
   onSaved,
   onDeleted
 }: {
   state: ComposerState;
+  pendingReference: PendingAnnotationReference | null;
+  referencePicking: boolean;
+  onPickReference: (label: string) => void;
+  onReferenceConsumed: () => void;
   onCancel: () => void;
   onSaved: () => void;
   onDeleted: () => void;
 }) {
   const [comment, setComment] = useState(state.editingAnnotation?.feedback.comment ?? "");
   const [severity, setSeverity] = useState<FeedbackSeverity>(state.editingAnnotation?.feedback.severity ?? "important");
+  const [references, setReferences] = useState<AnnotationReference[]>(state.editingAnnotation?.references ?? []);
   const [colorMode, setColorMode] = useState<ColorMode>("rgb");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const editorRef = useRef<ReferenceTextEditorHandle | null>(null);
+  const consumedReferenceNonceRef = useRef<number | null>(null);
   const canSave = comment.trim().length > 0;
   const position = getComposerPosition(state.inspection.documentRect);
+  const targetToken = useMemo<ReferenceEditorToken>(() => ({
+    id: "target",
+    label: "对象 1",
+    title: state.inspection.label,
+    removable: false
+  }), [state.inspection.label]);
+  const editorTokens = useMemo<ReferenceEditorToken[]>(
+    () => [targetToken, ...references.map(referenceToEditorToken)],
+    [references, targetToken]
+  );
 
   const save = useCallback(async () => {
     if (!canSave) return;
@@ -1185,7 +1370,8 @@ function Composer({
     if (state.editingAnnotation) {
       await updateAnnotationFeedback(state.editingAnnotation.id, {
         comment: comment.trim(),
-        severity
+        severity,
+        references: references.length ? references : undefined
       });
       onSaved();
       return;
@@ -1204,6 +1390,7 @@ function Composer({
         type: "style",
         severity
       },
+      references: references.length ? references : undefined,
       status: "pending"
     };
     await saveAnnotation(annotation);
@@ -1212,7 +1399,7 @@ function Composer({
     }
     void chrome.runtime.sendMessage({ type: "DOM_AI_ANNOTATION_SAVED", annotation });
     onSaved();
-  }, [canSave, comment, onSaved, severity, state.draft, state.editingAnnotation, state.initialScreenshot]);
+  }, [canSave, comment, onSaved, references, severity, state.draft, state.editingAnnotation, state.initialScreenshot]);
 
   const remove = useCallback(async () => {
     if (!state.editingAnnotation) return;
@@ -1227,13 +1414,54 @@ function Composer({
   useEffect(() => {
     setComment(state.editingAnnotation?.feedback.comment ?? "");
     setSeverity(state.editingAnnotation?.feedback.severity ?? "important");
+    setReferences(state.editingAnnotation?.references ?? []);
     setConfirmDelete(false);
   }, [state.editingAnnotation?.id]);
+
+  const insertReferenceToken = useCallback((token: ReferenceEditorToken) => {
+    if (editorRef.current) {
+      editorRef.current.insertToken(token);
+      return;
+    }
+    setComment((value) => `${value}${value && !/\s$/.test(value) ? " " : ""}${token.label}`);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingReference || consumedReferenceNonceRef.current === pendingReference.nonce) return;
+    consumedReferenceNonceRef.current = pendingReference.nonce;
+
+    if (isSameAnnotationReferenceTarget(pendingReference, state.draft)) {
+      insertReferenceToken(targetToken);
+      onReferenceConsumed();
+      return;
+    }
+
+    const existing = references.find((reference) => isSameAnnotationReferenceTarget(reference, pendingReference));
+    if (existing) {
+      insertReferenceToken(referenceToEditorToken(existing));
+      onReferenceConsumed();
+      return;
+    }
+
+    const { nonce: _nonce, ...reference } = pendingReference;
+    setReferences((items) => [...items, reference]);
+    insertReferenceToken(referenceToEditorToken(reference));
+    onReferenceConsumed();
+  }, [insertReferenceToken, onReferenceConsumed, pendingReference, references, state.draft, targetToken]);
+
+  function removeReference(id: string) {
+    setReferences((items) => items.filter((item) => item.id !== id));
+  }
+
+  function requestReferencePick() {
+    onPickReference(getNextReferenceLabel(references));
+  }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
       if (event.key === "Escape") {
+        if (referencePicking) return;
         event.preventDefault();
         event.stopPropagation();
         onCancel();
@@ -1249,7 +1477,7 @@ function Composer({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onCancel, save]);
+  }, [onCancel, referencePicking, save]);
 
   return (
     <section
@@ -1289,20 +1517,17 @@ function Composer({
             评论内容
           </label>
         </div>
-        <textarea
-          id="dom-ai-comment"
-          className="mt-1 min-h-[76px] w-full resize-none rounded-xl bg-white px-3 py-2.5 text-sm leading-5 text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] outline-none transition-shadow duration-150 placeholder:text-ink-500 focus:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.45)]"
+        <ReferenceTextEditor
+          ref={editorRef}
+          resetKey={state.editingAnnotation?.id ?? state.draft.selector}
           value={comment}
-          onChange={(event) => setComment(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            if (!isSaveKeyboardShortcut(event)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            void save();
-          }}
-          placeholder="例如：移动端 CTA 按钮距离标题太近。"
-          autoFocus
+          tokens={editorTokens}
+          placeholder="例如：把对象 1 的颜色改成对象 2 的颜色。"
+          onChange={setComment}
+          onPickReference={requestReferencePick}
+          onRemoveReference={removeReference}
+          onSave={() => void save()}
+          referencePicking={referencePicking}
         />
 
         <div className="mt-2.5">
@@ -1310,7 +1535,7 @@ function Composer({
         </div>
       </div>
 
-      <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-ink-100 pt-1.5">
+      <div className="mt-1.5 flex min-h-[38px] items-center justify-between gap-2 border-t border-ink-100 pt-1.5">
         {state.editingAnnotation ? (
           <button
             className={`inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
@@ -1322,15 +1547,15 @@ function Composer({
             {confirmDelete ? "确认删除" : "删除"}
           </button>
         ) : <span />}
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           <button
-            className="inline-flex h-7 items-center justify-center rounded-md bg-white px-2 text-[11px] font-semibold text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+            className="inline-flex h-[30px] items-center justify-center rounded-md bg-white px-2.5 text-[11px] font-semibold leading-none text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
             onClick={onCancel}
           >
             取消
           </button>
           <button
-            className="inline-flex h-7 items-center justify-center gap-1 rounded-md bg-brand-600 px-2 text-[11px] font-semibold text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
+            className="inline-flex h-[30px] items-center justify-center gap-1 rounded-md bg-brand-600 px-2.5 text-[11px] font-semibold leading-none text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
             disabled={!canSave}
             onClick={() => void save()}
             title="Cmd/Ctrl + Enter"
@@ -1349,6 +1574,382 @@ function getAnnotationTargetLabel(annotation: DomAnnotation): string {
     ? `.${annotation.element.className.trim().split(/\s+/).slice(0, 2).join(".")}`
     : "";
   return `${annotation.element.tag}${id}${className}`;
+}
+
+const ReferenceTextEditor = React.forwardRef<ReferenceTextEditorHandle, {
+  resetKey: string;
+  value: string;
+  tokens: ReferenceEditorToken[];
+  placeholder: string;
+  onChange: (value: string) => void;
+  onPickReference: () => void;
+  onRemoveReference: (id: string) => void;
+  onSave: () => void;
+  referencePicking: boolean;
+}>(function ReferenceTextEditor({
+  resetKey,
+  value,
+  tokens,
+  placeholder,
+  onChange,
+  onPickReference,
+  onRemoveReference,
+  onSave,
+  referencePicking
+}, ref) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const tokensRef = useRef(tokens);
+  const composingRef = useRef(false);
+
+  useEffect(() => {
+    tokensRef.current = tokens;
+  }, [tokens]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    renderReferenceEditorValue(editor, value, tokensRef.current, onRemoveReference);
+    updateReferenceEditorEmptyState(editor);
+    window.requestAnimationFrame(() => moveCaretToEditorEnd(editor));
+  }, [resetKey]);
+
+  const emitChange = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    updateReferenceEditorEmptyState(editor);
+    onChange(readReferenceEditorText(editor));
+  }, [onChange]);
+
+  const handleEditorKeyDownCapture = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    if (event.nativeEvent.isComposing) return;
+
+    if (isSaveKeyboardShortcut(event)) {
+      event.preventDefault();
+      onSave();
+      return;
+    }
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      const removed = removeAdjacentReferenceToken(editorRef.current, event.key, onRemoveReference);
+      if (removed) {
+        event.preventDefault();
+        emitChange();
+      }
+    }
+  }, [emitChange, onRemoveReference, onSave]);
+
+  const stopEditorShortcutPropagation = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => editorRef.current?.focus(),
+    insertToken: (token) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      insertReferenceTokenIntoEditor(editor, token, onRemoveReference);
+      updateReferenceEditorEmptyState(editor);
+      onChange(readReferenceEditorText(editor));
+    }
+  }), [onChange, onRemoveReference]);
+
+  return (
+    <div
+      className="mt-1 flex min-h-[112px] flex-col rounded-xl bg-white shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)] transition-shadow duration-150 focus-within:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.45)]"
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button")) return;
+        editorRef.current?.focus();
+      }}
+    >
+      <div
+        ref={editorRef}
+        id="dom-ai-comment"
+        className="min-h-[82px] flex-1 whitespace-pre-wrap break-words px-3 py-2.5 text-sm leading-7 text-ink-900 outline-none empty:before:pointer-events-none empty:before:text-ink-500 empty:before:content-[attr(data-placeholder)]"
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        data-placeholder={placeholder}
+        suppressContentEditableWarning
+        onCompositionStart={() => {
+          composingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          composingRef.current = false;
+          emitChange();
+        }}
+        onInput={() => {
+          if (!composingRef.current) emitChange();
+        }}
+        onKeyDownCapture={handleEditorKeyDownCapture}
+        onKeyUpCapture={stopEditorShortcutPropagation}
+        onKeyPressCapture={stopEditorShortcutPropagation}
+      />
+      <div className="flex min-h-[34px] items-center justify-end gap-2 px-2 pb-2">
+        <button
+          className={`inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[11px] font-bold leading-none transition-[background-color,color,transform,box-shadow] duration-150 active:scale-[0.96] ${
+            referencePicking
+              ? "bg-brand-600 text-white shadow-[0_6px_14px_rgba(15,159,120,0.2)]"
+              : "text-ink-500 hover:bg-ink-50 hover:text-ink-900"
+          }`}
+          onClick={onPickReference}
+          type="button"
+        >
+          <Link2 size={12} />
+          {referencePicking ? "点击元素" : "添加引用"}
+        </button>
+      </div>
+    </div>
+  );
+});
+
+function referenceToEditorToken(reference: AnnotationReference): ReferenceEditorToken {
+  return {
+    id: `reference-${reference.id}`,
+    label: reference.label,
+    title: getReferenceTitle(reference),
+    referenceId: reference.id,
+    removable: true
+  };
+}
+
+function renderReferenceEditorValue(
+  editor: HTMLDivElement,
+  value: string,
+  tokens: ReferenceEditorToken[],
+  onRemoveReference: (id: string) => void
+) {
+  editor.replaceChildren(...buildReferenceEditorNodes(value, tokens, onRemoveReference));
+}
+
+function buildReferenceEditorNodes(
+  value: string,
+  tokens: ReferenceEditorToken[],
+  onRemoveReference: (id: string) => void
+): Node[] {
+  const sortedTokens = [...tokens].sort((a, b) => b.label.length - a.label.length);
+  const nodes: Node[] = [];
+  let index = 0;
+
+  while (index < value.length) {
+    const token = sortedTokens.find((item) => value.startsWith(item.label, index));
+    if (token) {
+      nodes.push(createReferenceTokenNode(token, onRemoveReference));
+      index += token.label.length;
+      continue;
+    }
+
+    let nextTokenIndex = value.length;
+    for (const item of sortedTokens) {
+      const found = value.indexOf(item.label, index + 1);
+      if (found !== -1) nextTokenIndex = Math.min(nextTokenIndex, found);
+    }
+    nodes.push(document.createTextNode(value.slice(index, nextTokenIndex)));
+    index = nextTokenIndex;
+  }
+
+  return nodes;
+}
+
+function createReferenceTokenNode(token: ReferenceEditorToken, onRemoveReference: (id: string) => void): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "dom-ai-reference-token inline-flex h-[22px] max-w-full items-center gap-1 rounded-lg bg-brand-50 px-2 align-middle text-[11px] font-extrabold leading-none text-brand-800 shadow-[inset_0_0_0_1px_rgba(15,159,120,0.14)]";
+  chip.contentEditable = "false";
+  chip.dataset.referenceToken = "true";
+  chip.dataset.referenceLabel = token.label;
+  if (token.referenceId) chip.dataset.referenceId = token.referenceId;
+
+  const label = document.createElement("span");
+  label.className = "inline-flex h-[16px] shrink-0 items-center rounded-md bg-white/80 px-1.5 font-mono text-[10px] leading-none text-brand-700 shadow-[inset_0_0_0_1px_rgba(15,159,120,0.12)]";
+  label.textContent = token.label;
+  chip.append(label);
+
+  const title = document.createElement("span");
+  title.className = "min-w-0 max-w-[130px] truncate";
+  title.textContent = token.title;
+  chip.append(title);
+
+  if (token.removable && token.referenceId) {
+    const remove = document.createElement("button");
+    remove.className = "-mr-1 inline-grid h-[18px] w-[18px] shrink-0 place-items-center rounded-md pb-px text-[13px] leading-none text-brand-500 transition-[background-color,color,transform] duration-150 hover:bg-white hover:text-brand-900 active:scale-[0.96]";
+    remove.type = "button";
+    remove.ariaLabel = `移除${token.label}`;
+    remove.textContent = "×";
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      chip.remove();
+      onRemoveReference(token.referenceId!);
+      const editor = document.getElementById("dom-ai-comment");
+      if (editor instanceof HTMLDivElement) {
+        updateReferenceEditorEmptyState(editor);
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+        editor.focus();
+      }
+    });
+    chip.append(remove);
+  }
+
+  return chip;
+}
+
+function insertReferenceTokenIntoEditor(
+  editor: HTMLDivElement,
+  token: ReferenceEditorToken,
+  onRemoveReference: (id: string) => void
+) {
+  editor.focus();
+  const selection = window.getSelection();
+  const range = getEditorInsertionRange(editor, selection);
+  const fragment = document.createDocumentFragment();
+  const hasContent = readReferenceEditorText(editor).trim().length > 0;
+
+  if (hasContent) fragment.append(document.createTextNode(" "));
+  fragment.append(createReferenceTokenNode(token, onRemoveReference));
+  const trailingSpace = document.createTextNode(" ");
+  fragment.append(trailingSpace);
+  range.deleteContents();
+  range.insertNode(fragment);
+  placeCaretAfterNode(trailingSpace);
+}
+
+function getEditorInsertionRange(editor: HTMLDivElement, selection: Selection | null): Range {
+  if (selection?.rangeCount) {
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) return range;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  return range;
+}
+
+function readReferenceEditorText(editor: HTMLElement): string {
+  return readReferenceEditorNodeText(editor).replace(/\u00a0/g, " ");
+}
+
+function readReferenceEditorNodeText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (!(node instanceof HTMLElement)) return "";
+  if (node.dataset.referenceToken === "true") return node.dataset.referenceLabel ?? "";
+  if (node.tagName === "BR") return "\n";
+
+  const childText = Array.from(node.childNodes).map(readReferenceEditorNodeText).join("");
+  if (node.tagName === "DIV" || node.tagName === "P") return `${childText}\n`;
+  return childText;
+}
+
+function updateReferenceEditorEmptyState(editor: HTMLElement) {
+  editor.toggleAttribute("data-empty", readReferenceEditorText(editor).trim().length === 0);
+}
+
+function moveCaretToEditorEnd(editor: HTMLElement) {
+  editor.focus();
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function placeCaretAfterNode(node: Node) {
+  const range = document.createRange();
+  range.setStartAfter(node);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function removeAdjacentReferenceToken(
+  editor: HTMLDivElement | null,
+  key: "Backspace" | "Delete",
+  onRemoveReference: (id: string) => void
+): boolean {
+  if (!editor) return false;
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !selection.isCollapsed) return false;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return false;
+
+  const token = key === "Backspace"
+    ? getReferenceTokenBeforeCaret(editor, range)
+    : getReferenceTokenAfterCaret(editor, range);
+  if (!token) return false;
+
+  const referenceId = token.dataset.referenceId;
+  token.remove();
+  if (referenceId) onRemoveReference(referenceId);
+  updateReferenceEditorEmptyState(editor);
+  return true;
+}
+
+function getReferenceTokenBeforeCaret(editor: HTMLElement, range: Range): HTMLElement | null {
+  const container = range.startContainer;
+  const offset = range.startOffset;
+  if (container.nodeType === Node.TEXT_NODE && offset > 0) return null;
+  const candidate = container.nodeType === Node.TEXT_NODE
+    ? getPreviousSignificantSibling(container)
+    : getChildBeforeOffset(container, offset) ?? getPreviousSignificantSibling(container);
+  return getReferenceTokenElement(candidate, editor);
+}
+
+function getReferenceTokenAfterCaret(editor: HTMLElement, range: Range): HTMLElement | null {
+  const container = range.startContainer;
+  const offset = range.startOffset;
+  if (container.nodeType === Node.TEXT_NODE && offset < (container.textContent?.length ?? 0)) return null;
+  const candidate = container.nodeType === Node.TEXT_NODE
+    ? getNextSignificantSibling(container)
+    : getChildAfterOffset(container, offset) ?? getNextSignificantSibling(container);
+  return getReferenceTokenElement(candidate, editor);
+}
+
+function getChildBeforeOffset(container: Node, offset: number): Node | null {
+  return container.childNodes[Math.max(0, offset - 1)] ?? null;
+}
+
+function getChildAfterOffset(container: Node, offset: number): Node | null {
+  return container.childNodes[offset] ?? null;
+}
+
+function getPreviousSignificantSibling(node: Node): Node | null {
+  let current: Node | null = node.previousSibling;
+  while (current && current.nodeType === Node.TEXT_NODE && !current.textContent?.trim()) {
+    current = current.previousSibling;
+  }
+  return current;
+}
+
+function getNextSignificantSibling(node: Node): Node | null {
+  let current: Node | null = node.nextSibling;
+  while (current && current.nodeType === Node.TEXT_NODE && !current.textContent?.trim()) {
+    current = current.nextSibling;
+  }
+  return current;
+}
+
+function getReferenceTokenElement(node: Node | null, editor: HTMLElement): HTMLElement | null {
+  if (!node || !editor.contains(node)) return null;
+  if (node instanceof HTMLElement && node.dataset.referenceToken === "true") return node;
+  if (node.parentElement?.dataset.referenceToken === "true") return node.parentElement;
+  return null;
+}
+
+function getNextReferenceLabel(references: AnnotationReference[]): string {
+  const used = new Set(references.map((item) => Number(item.label.match(/\d+/)?.[0])).filter((value) => Number.isFinite(value)));
+  let next = 2;
+  while (used.has(next)) next += 1;
+  return `对象 ${next}`;
+}
+
+function getReferenceTitle(reference: AnnotationReference): string {
+  const id = reference.element.id ? `#${reference.element.id}` : "";
+  const className = reference.element.className
+    ? `.${reference.element.className.trim().split(/\s+/).slice(0, 2).join(".")}`
+    : "";
+  return `${reference.element.tag}${id}${className}`;
 }
 
 function MeasureLayer({
@@ -1735,7 +2336,96 @@ function isEmbeddedContentHost(element: Element): boolean {
 }
 
 function getAnnotationElement(annotation: DomAnnotation): Element | null {
-  return querySelectorDeep(annotation.selector);
+  return resolveStoredElement({
+    selector: annotation.selector,
+    xpath: annotation.xpath,
+    element: annotation.element,
+    rect: getSavedAnnotationDocumentRect(annotation)
+  });
+}
+
+function getReferenceElement(reference: AnnotationReference): Element | null {
+  return resolveStoredElement({
+    selector: reference.selector,
+    xpath: reference.xpath,
+    element: reference.element,
+    rect: getSavedReferenceDocumentRect(reference)
+  });
+}
+
+function resolveStoredElement(target: {
+  selector: string;
+  xpath?: string;
+  element: DomAnnotation["element"];
+  rect: HoverInspection["documentRect"];
+}): Element | null {
+  const selectorCandidate = querySelectorDeep(target.selector);
+  if (selectorCandidate && elementMatchesStoredSummary(selectorCandidate, target.element)) {
+    return selectorCandidate;
+  }
+
+  const xpathCandidate = target.xpath ? queryXPathElement(target.xpath) : null;
+  if (xpathCandidate && elementMatchesStoredSummary(xpathCandidate, target.element)) {
+    return xpathCandidate;
+  }
+
+  const closest = findClosestElementByStoredSummary(target.element, target.rect);
+  if (closest) return closest;
+
+  return selectorCandidate ?? xpathCandidate;
+}
+
+function queryXPathElement(xpath: string): Element | null {
+  if (!xpath || xpath.includes("/shadow-root/")) return null;
+  try {
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    return result.singleNodeValue instanceof Element ? result.singleNodeValue : null;
+  } catch {
+    return null;
+  }
+}
+
+function elementMatchesStoredSummary(element: Element, summary: DomAnnotation["element"]): boolean {
+  const htmlElement = element as HTMLElement;
+  if (summary.tag && element.tagName.toLowerCase() !== summary.tag) return false;
+  if (summary.id && htmlElement.id !== summary.id) return false;
+  if (summary.ariaLabel && element.getAttribute("aria-label") !== summary.ariaLabel) return false;
+
+  const currentText = normalizeComparableText(htmlElement.innerText || htmlElement.textContent || "");
+  const savedText = normalizeComparableText(summary.text || "");
+  if (savedText) {
+    if (!currentText) return false;
+    return currentText === savedText || currentText.startsWith(savedText) || savedText.startsWith(currentText);
+  }
+
+  if (summary.className) {
+    const savedClasses = summary.className.trim().split(/\s+/).filter(Boolean);
+    if (savedClasses.length && !savedClasses.every((className) => element.classList.contains(className))) return false;
+  }
+
+  return true;
+}
+
+function findClosestElementByStoredSummary(summary: DomAnnotation["element"], savedRect: HoverInspection["documentRect"]): Element | null {
+  const tag = summary.tag || "*";
+  const candidates = Array.from(document.getElementsByTagName(tag))
+    .filter((element) => elementMatchesStoredSummary(element, summary));
+  if (!candidates.length) return null;
+
+  return candidates
+    .map((element) => ({ element, distance: getElementDistanceFromSavedRect(element, savedRect) }))
+    .sort((a, b) => a.distance - b.distance)[0]?.element ?? null;
+}
+
+function getElementDistanceFromSavedRect(element: Element, savedRect: HoverInspection["documentRect"]): number {
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + window.scrollX;
+  const y = rect.top + window.scrollY;
+  return Math.abs(x - savedRect.x) + Math.abs(y - savedRect.y);
+}
+
+function normalizeComparableText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function notifyFrameHoverActive(context: PageContext, lastSignalRef: React.MutableRefObject<number>) {
@@ -2025,6 +2715,33 @@ function getAnnotationDraft(annotation: DomAnnotation): AnnotationDraft {
   return draft;
 }
 
+function createAnnotationReference(element: Element, label: string, context: PageContext): AnnotationReference {
+  const draft = createAnnotationDraft(element, undefined, context);
+  return {
+    id: crypto.randomUUID(),
+    label,
+    role: "reference",
+    url: draft.url,
+    title: draft.title,
+    selector: draft.selector,
+    xpath: draft.xpath,
+    context: draft.context,
+    element: draft.element,
+    rect: draft.rect,
+    viewport: draft.viewport,
+    computedStyles: draft.computedStyles
+  };
+}
+
+function isSameAnnotationReferenceTarget(
+  a: Pick<AnnotationReference | AnnotationDraft, "selector" | "url" | "context">,
+  b: Pick<AnnotationReference | AnnotationDraft, "selector" | "url" | "context">
+): boolean {
+  const aContextUrl = normalizeContextUrl(a.context?.url || a.url);
+  const bContextUrl = normalizeContextUrl(b.context?.url || b.url);
+  return a.selector === b.selector && aContextUrl === bContextUrl;
+}
+
 function getInspectionForAnnotation(annotation: DomAnnotation): HoverInspection {
   const liveElement = getAnnotationElement(annotation);
   if (liveElement) return getElementInspection(liveElement);
@@ -2073,6 +2790,21 @@ function getAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["
   return getSavedAnnotationDocumentRect(annotation);
 }
 
+function getReferenceDocumentRect(reference: AnnotationReference): HoverInspection["documentRect"] {
+  const liveElement = getReferenceElement(reference);
+  if (liveElement) {
+    const rect = liveElement.getBoundingClientRect();
+    return {
+      x: rect.left + window.scrollX,
+      y: rect.top + window.scrollY,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  return getSavedReferenceDocumentRect(reference);
+}
+
 function getSavedAnnotationDocumentRect(annotation: DomAnnotation): HoverInspection["documentRect"] {
   return {
     x: annotation.rect.x + annotation.rect.scrollX,
@@ -2082,10 +2814,25 @@ function getSavedAnnotationDocumentRect(annotation: DomAnnotation): HoverInspect
   };
 }
 
+function getSavedReferenceDocumentRect(reference: AnnotationReference): HoverInspection["documentRect"] {
+  return {
+    x: reference.rect.x + reference.rect.scrollX,
+    y: reference.rect.y + reference.rect.scrollY,
+    width: reference.rect.width,
+    height: reference.rect.height
+  };
+}
+
 function getAnnotationBorderRadius(annotation: DomAnnotation): string | undefined {
   const liveElement = getAnnotationElement(annotation);
   if (liveElement) return normalizeBorderRadius(window.getComputedStyle(liveElement).borderRadius);
   return normalizeBorderRadius(annotation.computedStyles.borderRadius);
+}
+
+function getReferenceBorderRadius(reference: AnnotationReference): string | undefined {
+  const liveElement = getReferenceElement(reference);
+  if (liveElement) return normalizeBorderRadius(window.getComputedStyle(liveElement).borderRadius);
+  return normalizeBorderRadius(reference.computedStyles.borderRadius);
 }
 
 function getComputedBoxSnapshot(styles: Record<string, string>, prefix: "margin" | "padding"): string {
@@ -2330,6 +3077,15 @@ function focusAnnotation(id: string, annotations: DomAnnotation[]) {
   const annotation = annotations.find((item) => item.id === id);
   if (!annotation) return;
   const rect = getAnnotationDocumentRect(annotation);
+  scrollToDocumentRect(rect);
+}
+
+function focusReference(reference: AnnotationReference) {
+  const rect = getReferenceDocumentRect(reference);
+  scrollToDocumentRect(rect);
+}
+
+function scrollToDocumentRect(rect: HoverInspection["documentRect"]) {
   const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
   const targetTop = Math.min(maxTop, Math.max(0, rect.y - 120));
   window.scrollTo({

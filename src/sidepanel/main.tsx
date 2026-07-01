@@ -16,6 +16,7 @@ import {
   Globe2,
   Info,
   ListChecks,
+  Link2,
   Network,
   Pencil,
   Ruler,
@@ -25,7 +26,7 @@ import {
   X
 } from "lucide-react";
 import "./index.css";
-import type { AnnotationStatus, DomAnnotation, MonitorEvent, MonitorEventKind, MonitorSnapshot, PageContext, RuntimeMessage } from "../shared/types";
+import type { AnnotationReference, AnnotationStatus, DomAnnotation, MonitorEvent, MonitorEventKind, MonitorSnapshot, PageContext, RuntimeMessage } from "../shared/types";
 import { JsonTree } from "./JsonTree";
 import { useColumnResize } from "./useColumnResize";
 import { getStatusTone, severityLabels, statusLabels, type Tone } from "../shared/status";
@@ -101,6 +102,9 @@ function App() {
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState("");
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
+  const [combineDialogOpen, setCombineDialogOpen] = useState(false);
+  const [combineText, setCombineText] = useState("");
+  const [combineError, setCombineError] = useState("");
   const [selectedPageUrl, setSelectedPageUrl] = useState("");
   const [confirmClearPage, setConfirmClearPage] = useState(false);
   const [pageLoadTick, setPageLoadTick] = useState(0);
@@ -283,6 +287,10 @@ function App() {
     [pageAnnotations]
   );
   const selectedCount = selectedIds.length;
+  const selectedAnnotations = useMemo(
+    () => pageAnnotations.filter((item) => selectedIds.includes(item.id)),
+    [pageAnnotations, selectedIds]
+  );
   const canMountContent = Boolean(tab?.id && tab.url && isInspectableUrl(tab.url) && !isCurrentPageExcluded);
   const canExposePageUi = canMountContent && panelDocumentVisible;
   const canInspect = Boolean(tab?.id && tab.url && canExposePageUi && isViewingActivePage);
@@ -507,6 +515,21 @@ function App() {
     }
   }
 
+  async function focusReference(reference: AnnotationReference) {
+    if (!isViewingActivePage) {
+      setError("当前正在查看其他页面的标注。请先打开原页面再定位。");
+      return;
+    }
+    if (!tab?.id) return;
+    await cancelActiveTool();
+    setError("");
+    try {
+      await sendContentMessage(tab.id, { type: "DOM_AI_FOCUS_REFERENCE", reference });
+    } catch (error) {
+      setError(getContentScriptErrorMessage(error, "定位"));
+    }
+  }
+
   async function editAnnotation(id: string) {
     if (!isViewingActivePage) {
       setError("当前正在查看其他页面的标注。请先打开原页面再编辑。");
@@ -593,6 +616,53 @@ function App() {
   async function deleteSelected() {
     await deleteAnnotationsByIds(selectedIds);
     setSelectedIds([]);
+  }
+
+  function openCombineDialog() {
+    if (selectedAnnotations.length < 2) {
+      setError("至少选择 2 条标注才能组合评论。");
+      return;
+    }
+    setCombineError("");
+    setCombineText(`把对象 1 按照对象 2 的样式调整。`);
+    setCombineDialogOpen(true);
+  }
+
+  async function saveCombinedAnnotation() {
+    const comment = combineText.trim();
+    if (selectedAnnotations.length < 2) {
+      setCombineError("至少选择 2 条标注才能组合。");
+      return;
+    }
+    if (!comment) {
+      setCombineError("请填写组合评论。");
+      return;
+    }
+
+    const [target, ...referenceAnnotations] = selectedAnnotations;
+    const now = new Date().toISOString();
+    const annotation: DomAnnotation = {
+      ...target,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      status: "pending",
+      fixRequested: false,
+      feedback: {
+        ...target.feedback,
+        comment,
+        type: "style"
+      },
+      references: referenceAnnotations.map((item, index) => createReferenceFromAnnotation(item, `对象 ${index + 2}`))
+    };
+
+    await saveAnnotations([annotation]);
+    await refresh();
+    setSelectedIds([]);
+    setSelectionMode(false);
+    setCombineDialogOpen(false);
+    setCombineText("");
+    setCombineError("");
   }
 
   function toggleSelected(id: string) {
@@ -908,6 +978,77 @@ function App() {
         </div>
       ) : null}
 
+      {combineDialogOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/28 p-4 backdrop-blur-sm">
+          <div className="max-h-[calc(100dvh-32px)] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-3 shadow-[0_24px_70px_rgba(17,24,39,0.24)]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-extrabold text-ink-950">组合评论</h2>
+                <p className="mt-1 text-xs font-semibold leading-5 text-ink-500">
+                  第一条作为对象 1，其余标注作为参考对象保存到新评论里。
+                </p>
+              </div>
+              <button
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-900 active:scale-[0.96]"
+                aria-label="关闭组合评论"
+                onClick={() => {
+                  setCombineDialogOpen(false);
+                  setCombineError("");
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {selectedAnnotations.map((annotation, index) => (
+                <span
+                  key={annotation.id}
+                  className={`inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg px-2 text-[11px] font-extrabold shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)] ${
+                    index === 0 ? "bg-brand-50 text-brand-800" : "bg-ink-50 text-ink-700"
+                  }`}
+                >
+                  <span className="rounded-md bg-white/80 px-1.5 py-0.5 font-mono text-[10px] leading-none">{`对象 ${index + 1}`}</span>
+                  <span className="max-w-[180px] truncate">{getAnnotationTitle(annotation)}</span>
+                </span>
+              ))}
+            </div>
+            <textarea
+              className="mt-3 min-h-28 w-full resize-y rounded-xl bg-ink-50 px-3 py-2.5 text-sm font-semibold leading-5 text-ink-900 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)] outline-none transition-shadow duration-150 placeholder:text-ink-400 focus:shadow-[inset_0_0_0_2px_rgba(15,159,120,0.4)]"
+              value={combineText}
+              onChange={(event) => {
+                setCombineText(event.target.value);
+                if (combineError) setCombineError("");
+              }}
+              placeholder="例如：把对象 1 的颜色改成对象 2 的颜色。"
+              autoFocus
+            />
+            {combineError ? (
+              <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">
+                {combineError}
+              </p>
+            ) : null}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                className="h-9 rounded-lg bg-white px-2.5 text-xs font-bold text-ink-700 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
+                onClick={() => {
+                  setCombineDialogOpen(false);
+                  setCombineError("");
+                }}
+              >
+                取消
+              </button>
+              <button
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-brand-600 px-2.5 text-xs font-bold text-white shadow-[0_6px_14px_rgba(15,159,120,0.2)] transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96]"
+                onClick={() => void saveCombinedAnnotation()}
+              >
+                <Link2 size={14} />
+                保存组合评论
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <section className={`min-h-0 flex-1 overflow-y-auto bg-white ${panelMode === "annotations" && pageAnnotations.length ? "scroll-mask-y" : ""}`}>
         {panelMode === "monitor" ? (
           <MonitorPanel
@@ -953,6 +1094,14 @@ function App() {
                       {statusLabels[status]}
                     </button>
                   ))}
+                  <button
+                    className="h-8 shrink-0 rounded-lg bg-brand-50 px-2.5 text-xs font-bold text-brand-700 transition-[background-color,transform] duration-150 hover:bg-brand-100 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-300"
+                    disabled={selectedCount < 2}
+                    title="把所选标注组合成一条新评论"
+                    onClick={openCombineDialog}
+                  >
+                    组合评论
+                  </button>
                   <button className="h-8 shrink-0 rounded-lg bg-red-50 px-2.5 text-xs font-bold text-red-700 transition-[background-color,transform] duration-150 hover:bg-red-100 active:scale-[0.96]" title="删除所选标注" onClick={() => void deleteSelected()}>删除</button>
                   <button className="ml-auto h-8 shrink-0 rounded-lg px-2 text-xs font-bold text-ink-500 hover:bg-ink-100 hover:text-ink-900" onClick={() => setSelectedIds([])}>取消</button>
                 </div>
@@ -967,6 +1116,7 @@ function App() {
                 annotation={annotation}
                 index={index}
                 onFocus={() => void focusAnnotation(annotation.id)}
+                onFocusReference={(reference) => void focusReference(reference)}
                 onEdit={() => void editAnnotation(annotation.id)}
                 onDelete={() => void deleteAnnotation(annotation.id)}
                 onPreviewInPage={(dataUrl) => {
@@ -1087,6 +1237,7 @@ function AnnotationCard({
   annotation,
   index,
   onFocus,
+  onFocusReference,
   onEdit,
   onDelete,
   onPreviewInPage,
@@ -1098,6 +1249,7 @@ function AnnotationCard({
   annotation: DomAnnotation;
   index: number;
   onFocus: () => void;
+  onFocusReference: (reference: AnnotationReference) => void;
   onEdit: () => void;
   onDelete: () => void;
   onPreviewInPage: (dataUrl: string) => void;
@@ -1153,6 +1305,31 @@ function AnnotationCard({
             <SeverityPill severity={annotation.feedback.severity} compact />
           </div>
           <p className="mt-1.5 line-clamp-3 whitespace-pre-line text-[14px] font-bold leading-5 text-ink-950">{annotation.feedback.comment}</p>
+          {annotation.references?.length ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {annotation.references.slice(0, 3).map((reference) => (
+                <button
+                  key={reference.id}
+                  data-card-action="true"
+                  className="inline-flex h-6 max-w-full items-center gap-1 rounded-md bg-brand-50 px-1.5 text-left text-[10px] font-extrabold text-brand-700 shadow-[inset_0_0_0_1px_rgba(15,159,120,0.12)] transition-[background-color,color,transform,box-shadow] duration-150 hover:bg-brand-100 hover:text-brand-900 active:scale-[0.96]"
+                  title={`定位${reference.label}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFocusReference(reference);
+                  }}
+                >
+                  <Link2 size={10} />
+                  <span className="shrink-0">{reference.label}</span>
+                  <span className="max-w-[120px] truncate font-mono font-bold">{reference.selector}</span>
+                </button>
+              ))}
+              {annotation.references.length > 3 ? (
+                <span className="inline-flex h-6 items-center rounded-md bg-ink-50 px-1.5 text-[10px] font-extrabold text-ink-500">
+                  +{annotation.references.length - 3}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-2 flex max-w-full items-center gap-1.5 truncate font-mono text-[11px] font-semibold text-ink-500">
             <Code2 size={13} className="shrink-0 text-ink-400" />
             <span className="truncate">{annotation.selector}</span>
@@ -2102,6 +2279,24 @@ function getAnnotationTitle(annotation: DomAnnotation) {
   return annotation.element.text || annotation.element.ariaLabel || annotation.element.role || annotation.element.tag.toUpperCase();
 }
 
+function createReferenceFromAnnotation(annotation: DomAnnotation, label: string): AnnotationReference {
+  return {
+    id: crypto.randomUUID(),
+    label,
+    role: "reference",
+    url: annotation.url,
+    title: annotation.title,
+    selector: annotation.selector,
+    xpath: annotation.xpath,
+    context: annotation.context,
+    element: annotation.element,
+    rect: annotation.rect,
+    viewport: annotation.viewport,
+    computedStyles: annotation.computedStyles,
+    sourceAnnotationId: annotation.id
+  };
+}
+
 function formatRelativeTime(value: string) {
   const timestamp = new Date(value).getTime();
   if (Number.isNaN(timestamp)) return "";
@@ -2327,16 +2522,65 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     `- **Severity:** ${severityLabels[annotation.feedback.severity]}`,
     `- **Status:** ${statusLabels[status]}`,
     `- **Key Styles:** ${keyStyles}`,
+    annotation.references?.length ? `- **Reference Objects:** ${annotation.references.length}` : undefined,
     "",
     "### Full Comment",
     "",
     annotation.feedback.comment,
+    annotation.references?.length ? "\n### Objects\n\n" + formatAnnotationObjectsForPrompt(annotation) : undefined,
     annotation.feedback.expected ? `\n### Expected\n\n${annotation.feedback.expected}` : undefined,
     "",
     "---",
     "After fixing, mark resolved via:",
     `\`window.__domAiAPI.resolveAnnotation("${annotation.id}")\``,
   ].filter((l): l is string => l !== undefined).join("\n");
+}
+
+function formatAnnotationObjectsForPrompt(annotation: DomAnnotation): string {
+  const objects = [
+    formatPromptObject("对象 1（修改目标）", {
+      selector: annotation.selector,
+      xpath: annotation.xpath,
+      element: annotation.element,
+      rect: annotation.rect,
+      viewport: annotation.viewport,
+      computedStyles: annotation.computedStyles,
+      url: annotation.url
+    }),
+    ...(annotation.references ?? []).map((reference) => formatPromptObject(`${reference.label}（参考对象）`, reference))
+  ];
+  return objects.join("\n\n");
+}
+
+function formatPromptObject(
+  title: string,
+  item: Pick<AnnotationReference, "selector" | "xpath" | "element" | "rect" | "viewport" | "computedStyles" | "url">
+): string {
+  const el = item.element;
+  const elDesc = `${el.tag}${el.id ? `#${el.id}` : ""}${el.className ? `.${el.className.trim().split(/\s+/).slice(0, 4).join(".")}` : ""}${el.ariaLabel ? ` [aria-label="${el.ariaLabel}"]` : ""}`;
+  const styles = item.computedStyles;
+  const keyStyles = [
+    styles.display && `display: ${styles.display}`,
+    styles.position && `position: ${styles.position}`,
+    styles.fontSize && `font-size: ${styles.fontSize}`,
+    styles.color && `color: ${styles.color}`,
+    styles.backgroundColor && `background: ${styles.backgroundColor}`,
+    styles.margin && `margin: ${styles.margin}`,
+    styles.padding && `padding: ${styles.padding}`,
+    styles.gap && `gap: ${styles.gap}`,
+    styles.borderRadius && `border-radius: ${styles.borderRadius}`
+  ].filter(Boolean).join("; ") || "none";
+
+  return [
+    `#### ${title}`,
+    `- **Selector:** \`${item.selector}\``,
+    item.xpath ? `- **XPath:** \`${item.xpath}\`` : undefined,
+    `- **Element:** \`${elDesc}\``,
+    `- **URL:** ${item.url}`,
+    `- **Position:** x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, ${Math.round(item.rect.width)}×${Math.round(item.rect.height)}`,
+    `- **Viewport:** ${item.viewport.width}×${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
+    `- **Key Styles:** ${keyStyles}`
+  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 // --- Feature E: Session Report ---

@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.2.zip`
-- Version: `0.3.2`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.3.zip`
+- Version: `0.3.3`
 
 ## Listing
 
@@ -81,6 +81,14 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.3 Review Notes
+
+- Adds composite feedback comments that can reference multiple page elements in one comment, such as changing one element to match another element's color.
+- Reference objects are stored locally with selector, XPath, element summary, position, viewport, and key style snapshots.
+- Improves Markdown export/import for composite comments while keeping exported content readable for AI/developer workflows.
+- Improves annotation relocation after dynamic pages such as GitHub rebuild DOM after refresh by validating live selector matches and falling back to XPath/text matching.
+- Prevents page-level keyboard shortcuts from firing while typing in the in-page comment editor.
 
 ## 0.3.2 Review Notes
 

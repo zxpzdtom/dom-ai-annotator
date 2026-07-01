@@ -74,6 +74,7 @@ export type DomAnnotation = {
   computedStyles: Record<string, string>;
   screenshot?: AnnotationScreenshot;
   screenshotAfter?: AnnotationScreenshot;
+  references?: AnnotationReference[];
   fixRequested?: boolean;
   feedback: {
     comment: string;
@@ -82,6 +83,22 @@ export type DomAnnotation = {
     severity: FeedbackSeverity;
   };
   status: AnnotationStatus | LegacyAnnotationStatus;
+};
+
+export type AnnotationReference = {
+  id: string;
+  label: string;
+  role: "reference";
+  url: string;
+  title: string;
+  selector: string;
+  xpath?: string;
+  context?: PageContext;
+  element: ElementSummary;
+  rect: ElementRect;
+  viewport: ViewportSnapshot;
+  computedStyles: Record<string, string>;
+  sourceAnnotationId?: string;
 };
 
 export type AnnotationDraft = Omit<
@@ -129,6 +146,7 @@ export type ContentMessage =
   | { type: "DOM_AI_START_MEASURING" }
   | { type: "DOM_AI_STOP_MEASURING" }
   | { type: "DOM_AI_FOCUS_ANNOTATION"; id: string }
+  | { type: "DOM_AI_FOCUS_REFERENCE"; reference: AnnotationReference }
   | { type: "DOM_AI_EDIT_ANNOTATION"; id: string }
   | { type: "DOM_AI_REFRESH_PINS" }
   | { type: "DOM_AI_MONITOR_ENABLE" }

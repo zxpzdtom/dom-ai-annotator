@@ -54,7 +54,7 @@ export async function updateAnnotationStatus(id: string, status: AnnotationStatu
 
 export async function updateAnnotationFeedback(
   id: string,
-  feedback: Pick<DomAnnotation["feedback"], "comment" | "severity">
+  feedback: Pick<DomAnnotation["feedback"], "comment" | "severity"> & Pick<DomAnnotation, "references">
 ): Promise<void> {
   const snapshot = await getAnnotationStoreSnapshot();
   const now = new Date().toISOString();
@@ -68,6 +68,7 @@ export async function updateAnnotationFeedback(
               comment: feedback.comment,
               severity: feedback.severity
             },
+            references: feedback.references,
             updatedAt: now
           }
         : item
