@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DOM Review",
   "description": "在网页元素上记录 UI 反馈，并导出给 AI 或开发处理。",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "permissions": ["activeTab", "storage", "sidePanel", "tabs", "scripting", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "icons": {

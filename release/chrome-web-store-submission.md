@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.3.zip`
-- Version: `0.3.3`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.4.zip`
+- Version: `0.3.4`
 
 ## Listing
 
@@ -81,6 +81,15 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.4 Review Notes
+
+- Fixes iframe annotation workflows so saved iframe annotations select the matching page context in the side panel.
+- Keeps annotation numbering consistent between page pins and the side panel when top-page and iframe annotations coexist.
+- Persists confirmed style edits and reapplies saved style changes after page refresh or content script reinjection.
+- Restores full DOM-path CSS selectors for annotations to improve AI/developer element targeting.
+- Focuses the comment input automatically after selecting an element.
+- Normalizes pixel-based style controls to integer px values while keeping opacity on decimal steps.
 
 ## 0.3.3 Review Notes
 
