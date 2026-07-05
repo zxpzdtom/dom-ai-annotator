@@ -119,6 +119,7 @@ function App() {
   const [monitorCopied, setMonitorCopied] = useState(false);
   const [networkSort, setNetworkSort] = useState<NetworkSortState>(null);
   const [activeFrameContext, setActiveFrameContext] = useState<PageContext | null>(null);
+  const userSelectedPageUrlRef = useRef(false);
 
   useEffect(() => {
     const syncVisibility = () => {
@@ -219,11 +220,19 @@ function App() {
     setIsPicking(false);
     setIsMeasuring(false);
     setActiveFrameContext(null);
+    userSelectedPageUrlRef.current = false;
   }, [currentUrl]);
 
   useEffect(() => {
-    if (currentUrl && !isCurrentPageExcluded && !selectedPageUrl) setSelectedPageUrl(currentUrl);
-  }, [currentUrl, isCurrentPageExcluded, selectedPageUrl]);
+    if (!currentUrl || isCurrentPageExcluded || selectedPageUrl) return;
+    setSelectedPageUrl(getPreferredActivePageUrl(currentUrl, annotations) || currentUrl);
+  }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
+
+  useEffect(() => {
+    if (!currentUrl || isCurrentPageExcluded || userSelectedPageUrlRef.current) return;
+    const preferredUrl = getPreferredActivePageUrl(currentUrl, annotations);
+    if (preferredUrl && selectedPageUrl !== preferredUrl) setSelectedPageUrl(preferredUrl);
+  }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
 
   const pageOptions = useMemo(() => {
     const byUrl = new Map<string, { url: string; title: string; count: number }>();
@@ -274,6 +283,15 @@ function App() {
         .filter((item) => item.url === viewedUrl)
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     [annotations, viewedUrl]
+  );
+  const activePageAnnotationIndexById = useMemo(
+    () => new Map(
+      annotations
+        .filter((item) => isAnnotationForCurrentTab(item, currentUrl))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((annotation, index) => [annotation.id, index])
+    ),
+    [annotations, currentUrl]
   );
 
   const filteredAnnotations = useMemo(
@@ -384,8 +402,7 @@ function App() {
   useEffect(() => {
     const listener = (message: RuntimeMessage) => {
       if (message.type === "DOM_AI_PAGE_CONTEXT_SELECTED") {
-        const contextTopUrl = message.context.topUrl || message.context.url;
-        if (contextTopUrl === currentUrl || message.context.url === currentUrl) {
+        if (isContextForCurrentTab(message.context, currentUrl)) {
           setActiveFrameContext(message.context);
           setSelectedPageUrl(message.context.url);
           setError("");
@@ -394,8 +411,7 @@ function App() {
       }
 
       if (message.type === "DOM_AI_ANNOTATION_SAVED") {
-        const annotationTopUrl = message.annotation.context?.topUrl || message.annotation.url;
-        if (annotationTopUrl === currentUrl || message.annotation.url === currentUrl) {
+        if (isAnnotationForCurrentTab(message.annotation, currentUrl)) {
           if (message.annotation.context) setActiveFrameContext(message.annotation.context);
           void refresh().then(() => {
             setSelectedPageUrl(message.annotation.url);
@@ -770,6 +786,7 @@ function App() {
             value={viewedUrl}
             currentUrl={currentUrl}
             onChange={(url) => {
+              userSelectedPageUrlRef.current = true;
               setSelectedPageUrl(url);
               setError("");
             }}
@@ -791,6 +808,7 @@ function App() {
                   <button
                     className="h-8 rounded-lg px-2.5 text-xs font-bold text-note-700 transition-[background-color,transform] duration-150 hover:bg-note-100 active:scale-[0.96]"
                     onClick={() => {
+                      userSelectedPageUrlRef.current = true;
                       setSelectedPageUrl(currentUrl);
                       setError("");
                     }}
@@ -1121,7 +1139,7 @@ function App() {
               <AnnotationCard
                 key={annotation.id}
                 annotation={annotation}
-                index={index}
+                index={activePageAnnotationIndexById.get(annotation.id) ?? index}
                 onFocus={() => void focusAnnotation(annotation.id)}
                 onFocusReference={(reference) => void focusReference(reference)}
                 onEdit={() => void editAnnotation(annotation.id)}
@@ -2523,6 +2541,54 @@ function isContentScriptErrorText(value: string): boolean {
 
 function isInspectableUrl(url: string) {
   return /^(https?|file):/i.test(url) && !isExcludedUrl(url);
+}
+
+function getPreferredActivePageUrl(currentUrl: string, annotations: DomAnnotation[]): string {
+  const currentAnnotations = annotations.filter((item) => normalizePanelUrl(item.url) === normalizePanelUrl(currentUrl));
+  if (currentAnnotations.length) return "";
+
+  const iframeCounts = new Map<string, { url: string; count: number; updatedAt: string }>();
+  for (const annotation of annotations) {
+    if (!isAnnotationForCurrentTab(annotation, currentUrl)) continue;
+    if (normalizePanelUrl(annotation.url) === normalizePanelUrl(currentUrl)) continue;
+
+    const existing = iframeCounts.get(annotation.url);
+    iframeCounts.set(annotation.url, {
+      url: annotation.url,
+      count: (existing?.count ?? 0) + 1,
+      updatedAt: existing && existing.updatedAt > annotation.updatedAt ? existing.updatedAt : annotation.updatedAt
+    });
+  }
+
+  return Array.from(iframeCounts.values())
+    .sort((a, b) => b.count - a.count || b.updatedAt.localeCompare(a.updatedAt))[0]?.url ?? "";
+}
+
+function isAnnotationForCurrentTab(annotation: DomAnnotation, currentUrl: string): boolean {
+  return isContextForCurrentTab(annotation.context, currentUrl, annotation.url);
+}
+
+function isContextForCurrentTab(context: PageContext | undefined, currentUrl: string, fallbackUrl = ""): boolean {
+  const current = normalizePanelUrl(currentUrl);
+  if (!current) return false;
+  if (!context) return normalizePanelUrl(fallbackUrl) === current;
+
+  const contextTopUrl = normalizePanelUrl(context.topUrl || (context.kind === "top" ? context.url : ""));
+  const contextUrl = normalizePanelUrl(context.url || fallbackUrl);
+  return contextTopUrl === current || contextUrl === current;
+}
+
+function normalizePanelUrl(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (url.pathname !== "/" && url.pathname.endsWith("/")) {
+      url.pathname = url.pathname.replace(/\/+$/, "");
+    }
+    return url.toString();
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
 }
 
 function isSamePageOrigin(urlA: string, urlB: string): boolean {

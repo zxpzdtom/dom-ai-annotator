@@ -435,6 +435,12 @@ function App() {
   }, [refreshAnnotations]);
 
   useEffect(() => {
+    for (const annotation of annotations) {
+      applySavedAnnotationStyleChanges(annotation);
+    }
+  }, [annotations]);
+
+  useEffect(() => {
     let frame = 0;
 
     const updateDocumentSize = () => {
@@ -1726,6 +1732,8 @@ function Composer({
   const [styleScrubbing, setStyleScrubbing] = useState(false);
   const editorRef = useRef<ReferenceTextEditorHandle | null>(null);
   const styleEditorRef = useRef<StyleEditorHandle | null>(null);
+  const compactCommentInputRef = useRef<HTMLInputElement | null>(null);
+  const expandedCommentInputRef = useRef<HTMLInputElement | null>(null);
   const consumedReferenceNonceRef = useRef<number | null>(null);
   const completedRef = useRef(false);
   const canSave = comment.trim().length > 0 || styleChanges.length > 0;
@@ -1792,6 +1800,7 @@ function Composer({
 
   const save = useCallback(async () => {
     if (!canSave) return;
+    completedRef.current = true;
     const trimmedComment = comment.trim();
     const feedbackComment = trimmedComment;
     const savedStyleChanges = styleChanges.length ? styleChanges : undefined;
@@ -1799,7 +1808,7 @@ function Composer({
     if (state.editingAnnotation) {
       const now = new Date().toISOString();
       const liveDraft = getDraftForSave();
-      await saveAnnotation({
+      const annotation: DomAnnotation = {
         ...state.editingAnnotation,
         ...liveDraft,
         id: state.editingAnnotation.id,
@@ -1813,8 +1822,9 @@ function Composer({
         references: references.length ? references : undefined,
         styleChanges: savedStyleChanges,
         status: state.editingAnnotation.status
-      });
-      completedRef.current = true;
+      };
+      await saveAnnotation(annotation);
+      void chrome.runtime.sendMessage({ type: "DOM_AI_ANNOTATION_SAVED", annotation });
       onSaved();
       return;
     }
@@ -1842,7 +1852,6 @@ function Composer({
       await updateAnnotationScreenshot(newId, "screenshot", state.initialScreenshot);
     }
     void chrome.runtime.sendMessage({ type: "DOM_AI_ANNOTATION_SAVED", annotation });
-    completedRef.current = true;
     onSaved();
   }, [canSave, comment, getDraftForSave, onSaved, references, severity, state.editingAnnotation, state.initialScreenshot, styleChanges]);
 
@@ -1876,6 +1885,13 @@ function Composer({
     setStyleChanges(state.editingAnnotation?.styleChanges ?? []);
     setStyleScrubbing(false);
   }, [state.draft.selector, state.editingAnnotation?.id, state.inspection]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      focusCommentInput(detailsOpen ? expandedCommentInputRef.current : compactCommentInputRef.current);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [detailsOpen, state.draft.selector, state.editingAnnotation?.id]);
 
   const insertReferenceToken = useCallback((token: ReferenceEditorToken) => {
     if (editorRef.current) {
@@ -1963,6 +1979,7 @@ function Composer({
             <StyleTuneIcon size={16} />
           </button>
           <input
+            ref={compactCommentInputRef}
             className="dom-ai-compact-input"
             value={comment}
             placeholder={state.editingAnnotation ? "编辑评论..." : "添加评论..."}
@@ -2012,6 +2029,7 @@ function Composer({
               <StyleTuneIcon size={16} />
             </button>
             <input
+              ref={expandedCommentInputRef}
               className="dom-ai-expanded-input"
               value={comment}
               placeholder="描述这些更改..."
@@ -2083,6 +2101,13 @@ function getAnnotationTargetLabel(annotation: DomAnnotation): string {
     ? `.${annotation.element.className.trim().split(/\s+/).slice(0, 2).join(".")}`
     : "";
   return `${annotation.element.tag}${id}${className}`;
+}
+
+function focusCommentInput(input: HTMLInputElement | null) {
+  if (!input) return;
+  input.focus({ preventScroll: true });
+  const caret = input.value.length;
+  input.setSelectionRange(caret, caret);
 }
 
 const ReferenceTextEditor = React.forwardRef<ReferenceTextEditorHandle, {
@@ -2708,6 +2733,25 @@ function applySavedStyleChangesToTarget(
         value: change.value
       });
     }
+  }
+}
+
+function applySavedAnnotationStyleChanges(annotation: DomAnnotation) {
+  if (!annotation.styleChanges?.length) return;
+  const element = getAnnotationElement(annotation);
+  if (!(element instanceof HTMLElement) || isInjectedElement(element)) return;
+
+  for (const change of annotation.styleChanges) {
+    const editableProperty = getEditableStylePropertyForChange(change.property);
+    if (!editableProperty) continue;
+
+    if (editableProperty === "textContent") {
+      const inspection = getElementInspection(element);
+      if (isTextContentEditable(inspection)) setEditableElementText(element, change.value);
+      continue;
+    }
+
+    applyEditableStyleValue(element, change.property, change.value);
   }
 }
 

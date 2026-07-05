@@ -176,24 +176,24 @@ function roundColor(value: number): number {
 
 export function getNumericAdjusterConfigs(values: EditableStyleValues): NumericAdjusterConfigs {
   return {
-    fontSize: createNumericAdjuster("fontSize", "font-size", "字号", 6, 180, numericFallback(values.fontSize, 16), 0.42, "px", "px", 1, 0.1),
-    lineHeight: createNumericAdjuster("lineHeight", "line-height", "行高", 6, 240, numericFallback(values.lineHeight, numericFallback(values.fontSize, 16) * 1.4), 0.42, "px", "px", 1, 0.1),
+    fontSize: createNumericAdjuster("fontSize", "font-size", "字号", 6, 180, numericFallback(values.fontSize, 16), 0.42, "px", "px", 1, 1),
+    lineHeight: createNumericAdjuster("lineHeight", "line-height", "行高", 6, 240, numericFallback(values.lineHeight, numericFallback(values.fontSize, 16) * 1.4), 0.42, "px", "px", 1, 1),
     opacity: createNumericAdjuster("opacity", "opacity", "Opacity", 0, 1, numericFallback(values.opacity, 1), 0.004, "", "", 0.01, 0.01),
-    gap: createNumericAdjuster("gap", "gap", "间距", 0, 160, numericFallback(values.gap, 0), 0.3, "px", "px", 1, 0.1),
-    rowGap: createNumericAdjuster("rowGap", "row-gap", "垂直", 0, 160, numericFallback(values.rowGap, numericFallback(values.gap, 0)), 0.3, "px", "px", 1, 0.1),
-    columnGap: createNumericAdjuster("columnGap", "column-gap", "水平", 0, 160, numericFallback(values.columnGap, numericFallback(values.gap, 0)), 0.3, "px", "px", 1, 0.1),
-    borderRadius: createNumericAdjuster("borderRadius", "border-radius", "边框圆角半径", 0, 160, numericFallback(values.borderRadius, 0), 0.3, "px", "px", 1, 0.1),
-    borderWidth: createNumericAdjuster("borderWidth", "border-width", "边框宽度", 0, 48, numericFallback(values.borderWidth, 0), 0.2, "px", "px", 1, 0.1),
-    width: createNumericAdjuster("width", "width", "宽度", 0, 2400, numericFallback(values.width, 0), 0.8, "px", "px", 1, 0.1),
-    height: createNumericAdjuster("height", "height", "高度", 0, 2400, numericFallback(values.height, 0), 0.8, "px", "px", 1, 0.1),
-    marginTop: createNumericAdjuster("marginTop", "margin-top", "上", -160, 240, numericFallback(values.marginTop, 0), 0.3, "px", "px", 1, 0.1),
-    marginRight: createNumericAdjuster("marginRight", "margin-right", "右", -160, 240, numericFallback(values.marginRight, 0), 0.3, "px", "px", 1, 0.1),
-    marginBottom: createNumericAdjuster("marginBottom", "margin-bottom", "下", -160, 240, numericFallback(values.marginBottom, 0), 0.3, "px", "px", 1, 0.1),
-    marginLeft: createNumericAdjuster("marginLeft", "margin-left", "左", -160, 240, numericFallback(values.marginLeft, 0), 0.3, "px", "px", 1, 0.1),
-    paddingTop: createNumericAdjuster("paddingTop", "padding-top", "上", 0, 240, numericFallback(values.paddingTop, 0), 0.3, "px", "px", 1, 0.1),
-    paddingRight: createNumericAdjuster("paddingRight", "padding-right", "右", 0, 240, numericFallback(values.paddingRight, 0), 0.3, "px", "px", 1, 0.1),
-    paddingBottom: createNumericAdjuster("paddingBottom", "padding-bottom", "下", 0, 240, numericFallback(values.paddingBottom, 0), 0.3, "px", "px", 1, 0.1),
-    paddingLeft: createNumericAdjuster("paddingLeft", "padding-left", "左", 0, 240, numericFallback(values.paddingLeft, 0), 0.3, "px", "px", 1, 0.1)
+    gap: createNumericAdjuster("gap", "gap", "间距", 0, 160, numericFallback(values.gap, 0), 0.3, "px", "px", 1, 1),
+    rowGap: createNumericAdjuster("rowGap", "row-gap", "垂直", 0, 160, numericFallback(values.rowGap, numericFallback(values.gap, 0)), 0.3, "px", "px", 1, 1),
+    columnGap: createNumericAdjuster("columnGap", "column-gap", "水平", 0, 160, numericFallback(values.columnGap, numericFallback(values.gap, 0)), 0.3, "px", "px", 1, 1),
+    borderRadius: createNumericAdjuster("borderRadius", "border-radius", "边框圆角半径", 0, 160, numericFallback(values.borderRadius, 0), 0.3, "px", "px", 1, 1),
+    borderWidth: createNumericAdjuster("borderWidth", "border-width", "边框宽度", 0, 48, numericFallback(values.borderWidth, 0), 0.2, "px", "px", 1, 1),
+    width: createNumericAdjuster("width", "width", "宽度", 0, 2400, numericFallback(values.width, 0), 0.8, "px", "px", 1, 1),
+    height: createNumericAdjuster("height", "height", "高度", 0, 2400, numericFallback(values.height, 0), 0.8, "px", "px", 1, 1),
+    marginTop: createNumericAdjuster("marginTop", "margin-top", "上", -160, 240, numericFallback(values.marginTop, 0), 0.3, "px", "px", 1, 1),
+    marginRight: createNumericAdjuster("marginRight", "margin-right", "右", -160, 240, numericFallback(values.marginRight, 0), 0.3, "px", "px", 1, 1),
+    marginBottom: createNumericAdjuster("marginBottom", "margin-bottom", "下", -160, 240, numericFallback(values.marginBottom, 0), 0.3, "px", "px", 1, 1),
+    marginLeft: createNumericAdjuster("marginLeft", "margin-left", "左", -160, 240, numericFallback(values.marginLeft, 0), 0.3, "px", "px", 1, 1),
+    paddingTop: createNumericAdjuster("paddingTop", "padding-top", "上", 0, 240, numericFallback(values.paddingTop, 0), 0.3, "px", "px", 1, 1),
+    paddingRight: createNumericAdjuster("paddingRight", "padding-right", "右", 0, 240, numericFallback(values.paddingRight, 0), 0.3, "px", "px", 1, 1),
+    paddingBottom: createNumericAdjuster("paddingBottom", "padding-bottom", "下", 0, 240, numericFallback(values.paddingBottom, 0), 0.3, "px", "px", 1, 1),
+    paddingLeft: createNumericAdjuster("paddingLeft", "padding-left", "左", 0, 240, numericFallback(values.paddingLeft, 0), 0.3, "px", "px", 1, 1)
   };
 }
 

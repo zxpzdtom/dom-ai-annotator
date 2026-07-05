@@ -33,19 +33,6 @@ const STYLE_PROPS = [
   "gridTemplateRows"
 ];
 
-const STABLE_SELECTOR_ATTRIBUTES = [
-  "data-testid",
-  "data-test",
-  "data-cy",
-  "data-qa",
-  "data-test-id",
-  "aria-label",
-  "name",
-  "placeholder",
-  "title",
-  "alt"
-];
-
 const SHADOW_SELECTOR_SEPARATOR = " >>> ";
 
 export function createAnnotationDraft(element: Element, pin?: AnnotationDraft["pin"], context?: PageContext): AnnotationDraft {
@@ -122,14 +109,6 @@ export function querySelectorDeep(selector: string, root: ParentNode = document)
 }
 
 function getCssSelectorWithinRoot(element: Element, root: ParentNode): string {
-  if (element.id && isUniqueSelector(`#${cssEscape(element.id)}`, root)) {
-    return `#${cssEscape(element.id)}`;
-  }
-
-  for (const selector of getStableSelectorCandidates(element, root)) {
-    if (isUniqueSelector(selector, root)) return selector;
-  }
-
   const parts: string[] = [];
   let current: Element | null = element;
   const stopElement = root instanceof Document ? root.body : null;
@@ -154,54 +133,21 @@ function getCssSelectorWithinRoot(element: Element, root: ParentNode): string {
     }
 
     parts.unshift(selector);
-    const candidate = parts.join(" > ");
-    if (isUniqueSelector(candidate, root)) {
-      return candidate;
-    }
-
     current = parent;
   }
 
   if (!parts.length) return root instanceof Document ? "body" : getElementSelectorSegment(element);
-  return root instanceof Document ? `body > ${parts.join(" > ")}` : parts.join(" > ");
+  return parts.join(" > ");
 }
 
 function getElementSelectorSegment(element: Element): string {
   const tag = element.nodeName.toLowerCase();
-  const stableAttributeSelector = getStableAttributeSelector(element);
-  if (stableAttributeSelector) return `${tag}${stableAttributeSelector}`;
-
   const currentElement = element as HTMLElement;
   const classes = Array.from(currentElement.classList)
     .filter((className) => !className.startsWith("dom-ai-") && !looksGeneratedClassName(className))
     .slice(0, 3);
 
   return classes.length ? `${tag}.${classes.map(cssEscape).join(".")}` : tag;
-}
-
-function getStableSelectorCandidates(element: Element, root: ParentNode): string[] {
-  const tag = element.nodeName.toLowerCase();
-  const candidates: string[] = [];
-
-  const stableAttributeSelector = getStableAttributeSelector(element);
-  if (stableAttributeSelector) {
-    candidates.push(stableAttributeSelector, `${tag}${stableAttributeSelector}`);
-  }
-
-  const role = cleanAttributeValue(element.getAttribute("role"));
-  if (role) {
-    candidates.push(`[role="${cssStringEscape(role)}"]`, `${tag}[role="${cssStringEscape(role)}"]`);
-  }
-
-  return candidates;
-}
-
-function getStableAttributeSelector(element: Element): string {
-  for (const attr of STABLE_SELECTOR_ATTRIBUTES) {
-    const value = cleanAttributeValue(element.getAttribute(attr));
-    if (value) return `[${attr}="${cssStringEscape(value)}"]`;
-  }
-  return "";
 }
 
 function getXPath(element: Element): string {
@@ -242,14 +188,6 @@ function getComputedStyleSnapshot(element: Element): Record<string, string> {
   return Object.fromEntries(STYLE_PROPS.map((prop) => [prop, styles.getPropertyValue(toKebab(prop)) || styles.getPropertyValue(prop)]));
 }
 
-function isUniqueSelector(selector: string, root: ParentNode = document): boolean {
-  try {
-    return root.querySelectorAll(selector).length === 1;
-  } catch {
-    return false;
-  }
-}
-
 function normalizeText(text: string): string | undefined {
   const normalized = text.replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, 240) : undefined;
@@ -257,15 +195,6 @@ function normalizeText(text: string): string | undefined {
 
 function cssEscape(value: string): string {
   return window.CSS?.escape ? window.CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-}
-
-function cssStringEscape(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\a ");
-}
-
-function cleanAttributeValue(value: string | null): string {
-  const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
-  return normalized && normalized.length <= 120 ? normalized : "";
 }
 
 function looksGeneratedClassName(className: string): boolean {
