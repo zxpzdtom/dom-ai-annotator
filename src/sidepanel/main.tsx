@@ -45,6 +45,7 @@ import { exportAnnotationsAsMarkdown, importAnnotationsFromMarkdown } from "../s
 import { getExcludedUrlReason, isExcludedUrl } from "../shared/excludedUrls";
 import { writeClipboardText } from "../shared/clipboard";
 import { formatAnnotationFeedbackForMarkdown, formatStyleChangesForMarkdown, getVisibleAnnotationComment } from "../shared/styleChanges";
+import { getAnnotationCodeSearchHints, getAnnotationTitle } from "../shared/annotationDisplay";
 
 type ActiveTab = {
   id?: number;
@@ -352,11 +353,16 @@ function App() {
     const handleFrameNavigation = (details: { tabId: number; url?: string }) => {
       if (details.tabId !== tabId) return;
       if (details.url && (!isInspectableUrl(details.url) || isExcludedUrl(details.url))) return;
-      window.setTimeout(() => {
-        void ensureContentScript(tabId)
-          .then(() => setContentPanelVisible(tabId, true))
-          .catch(() => undefined);
-      }, 80);
+      for (const delayMs of [80, 240, 600]) {
+        window.setTimeout(() => {
+          void ensureContentScript(tabId)
+            .then(async () => {
+              await setContentPanelVisible(tabId, true);
+              await sendTabMessageToFramesWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
+            })
+            .catch(() => undefined);
+        }, delayMs);
+      }
     };
 
     chrome.webNavigation.onCommitted.addListener(handleFrameNavigation);
@@ -1375,7 +1381,7 @@ function AnnotationCard({
                 }}
               >
                 {fixCopied ? <CheckCircle2 size={12} /> : <Wand2 size={12} />}
-                {fixCopied ? "已复制给 AI" : "Fix with AI"}
+                {fixCopied ? "已复制给 AI" : "交给 AI 修复"}
               </button>
               <button
                 data-card-action="true"
@@ -2298,10 +2304,6 @@ function Badge({ children, tone }: { children: React.ReactNode; tone: Tone }) {
   return <span className={`inline-flex h-7 items-center rounded-lg px-2 text-[11px] font-bold leading-none ${styles[tone]}`}>{children}</span>;
 }
 
-function getAnnotationTitle(annotation: DomAnnotation) {
-  return annotation.element.text || annotation.element.ariaLabel || annotation.element.role || annotation.element.tag.toUpperCase();
-}
-
 function createReferenceFromAnnotation(annotation: DomAnnotation, label: string): AnnotationReference {
   return {
     id: crypto.randomUUID(),
@@ -2423,7 +2425,7 @@ const CONTENT_SCRIPT_RETRY_DELAYS = [20, 60, 120, 240, 360];
 
 async function sendContentMessage<T = void>(tabId: number, message: unknown): Promise<T> {
   await ensureContentScript(tabId);
-  return sendTabMessageWithRetry<T>(tabId, message);
+  return sendTabMessageToFramesWithRetry<T>(tabId, message);
 }
 
 async function ensureContentScript(tabId: number) {
@@ -2432,7 +2434,7 @@ async function ensureContentScript(tabId: number) {
   } catch {
     // Some restricted frames cannot be scripted; the tab may still have usable frames.
   }
-  await sendTabMessageWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
+  await sendTabMessageToFramesWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
 }
 
 async function injectContentScript(tabId: number) {
@@ -2462,17 +2464,36 @@ async function ensurePageMonitorBridge(tabId: number) {
   });
 }
 
-async function sendTabMessageWithRetry<T = void>(tabId: number, message: unknown): Promise<T> {
+async function sendTabMessageToFramesWithRetry<T = void>(tabId: number, message: unknown): Promise<T> {
   let lastError: unknown;
   for (const delayMs of CONTENT_SCRIPT_RETRY_DELAYS) {
     await delay(delayMs);
     try {
-      return await chrome.tabs.sendMessage(tabId, message) as T;
+      return await sendTabMessageToFrames<T>(tabId, message);
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError;
+}
+
+async function sendTabMessageToFrames<T = void>(tabId: number, message: unknown): Promise<T> {
+  const frameIds = await getTabFrameIds(tabId);
+  const results = await Promise.allSettled(
+    frameIds.map((frameId) => chrome.tabs.sendMessage(tabId, message, { frameId }) as Promise<T>)
+  );
+  const firstSuccess = results.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<Awaited<T>> | undefined;
+  if (firstSuccess) return firstSuccess.value as T;
+  throw results.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason
+    ?? new Error("No content frame accepted the message.");
+}
+
+async function getTabFrameIds(tabId: number): Promise<number[]> {
+  const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => undefined);
+  const frameIds = frames
+    ?.map((frame) => frame.frameId)
+    .filter((frameId): frameId is number => typeof frameId === "number");
+  return frameIds?.length ? Array.from(new Set(frameIds)) : [0];
 }
 
 function delay(ms: number): Promise<void> {
@@ -2514,7 +2535,7 @@ function isSamePageOrigin(urlA: string, urlB: string): boolean {
   }
 }
 
-// --- Feature D: Fix with AI prompt formatting ---
+// --- Feature D: 给 AI 修复的提示词格式 ---
 
 function formatFixPrompt(annotation: DomAnnotation): string {
   const status = normalizeStatus(annotation.status);
@@ -2527,35 +2548,37 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     styles.fontSize && `font-size: ${styles.fontSize}`,
     styles.color && `color: ${styles.color}`,
     styles.backgroundColor && `background: ${styles.backgroundColor}`,
-  ].filter(Boolean).join("; ") || "none";
+  ].filter(Boolean).join("; ") || "无关键样式快照";
+  const searchHints = getAnnotationCodeSearchHints(annotation);
 
   return [
-    "# AI Fix Request",
+    "# 给 AI 修复的界面反馈",
     "",
-    "Please fix the following UI issue. Use the selector and element info to locate the component in the codebase.",
+    "请修复下面的界面问题。请结合选择器、XPath、元素信息、位置和关键样式定位代码中的相关组件；如果无法安全修改，请说明原因。",
     "",
-    `## Issue: ${(getVisibleAnnotationComment(annotation) || annotation.styleChanges?.[0]?.label || "Style change").split("\n")[0]}`,
+    `## 问题：${(getVisibleAnnotationComment(annotation) || annotation.styleChanges?.[0]?.label || "样式变更").split("\n")[0]}`,
     "",
-    `- **Selector:** \`${annotation.selector}\``,
+    `- **选择器:** \`${annotation.selector}\``,
     annotation.xpath ? `- **XPath:** \`${annotation.xpath}\`` : undefined,
-    `- **Element:** \`${elDesc}\``,
+    `- **元素:** \`${elDesc}\``,
     `- **URL:** ${annotation.url}`,
-    `- **Position:** x=${Math.round(annotation.rect.x)}, y=${Math.round(annotation.rect.y)}, ${Math.round(annotation.rect.width)}×${Math.round(annotation.rect.height)}`,
-    `- **Viewport:** ${annotation.viewport.width}×${annotation.viewport.height} @ ${annotation.viewport.devicePixelRatio}x`,
-    `- **Severity:** ${severityLabels[annotation.feedback.severity]}`,
-    `- **Status:** ${statusLabels[status]}`,
-    `- **Key Styles:** ${keyStyles}`,
-    annotation.styleChanges?.length ? `- **Requested Style Changes:** ${formatAnnotationStyleChanges(annotation.styleChanges)}` : undefined,
-    annotation.references?.length ? `- **Reference Objects:** ${annotation.references.length}` : undefined,
+    `- **位置:** x=${Math.round(annotation.rect.x)}, y=${Math.round(annotation.rect.y)}, ${Math.round(annotation.rect.width)}×${Math.round(annotation.rect.height)}`,
+    `- **视口:** ${annotation.viewport.width}×${annotation.viewport.height} @ ${annotation.viewport.devicePixelRatio}x`,
+    `- **优先级:** ${severityLabels[annotation.feedback.severity]}`,
+    `- **状态:** ${statusLabels[status]}`,
+    `- **关键样式:** ${keyStyles}`,
+    searchHints.length ? `- **代码搜索线索:** ${searchHints.join("；")}` : undefined,
+    annotation.styleChanges?.length ? `- **需要修改的样式:** ${formatAnnotationStyleChanges(annotation.styleChanges)}` : undefined,
+    annotation.references?.length ? `- **涉及对象数量:** ${annotation.references.length}` : undefined,
     "",
-    "### Full Comment",
+    "### 完整反馈",
     "",
     formatAnnotationFeedbackForMarkdown(annotation),
-    annotation.references?.length ? "\n### Objects\n\n" + formatAnnotationObjectsForPrompt(annotation) : undefined,
-    annotation.feedback.expected ? `\n### Expected\n\n${annotation.feedback.expected}` : undefined,
+    annotation.references?.length ? "\n### 涉及对象\n\n" + formatAnnotationObjectsForPrompt(annotation) : undefined,
+    annotation.feedback.expected ? `\n### 期望效果\n\n${annotation.feedback.expected}` : undefined,
     "",
     "---",
-    "After fixing, update the item status in DOM Review.",
+    "修复完成后，请总结修改内容，并在 DOM Review 中把该标注流转到合适状态。",
   ].filter((l): l is string => l !== undefined).join("\n");
 }
 
@@ -2596,17 +2619,17 @@ function formatPromptObject(
     styles.padding && `padding: ${styles.padding}`,
     styles.gap && `gap: ${styles.gap}`,
     styles.borderRadius && `border-radius: ${styles.borderRadius}`
-  ].filter(Boolean).join("; ") || "none";
+  ].filter(Boolean).join("; ") || "无关键样式快照";
 
   return [
     `#### ${title}`,
-    `- **Selector:** \`${item.selector}\``,
+    `- **选择器:** \`${item.selector}\``,
     item.xpath ? `- **XPath:** \`${item.xpath}\`` : undefined,
-    `- **Element:** \`${elDesc}\``,
+    `- **元素:** \`${elDesc}\``,
     `- **URL:** ${item.url}`,
-    `- **Position:** x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, ${Math.round(item.rect.width)}×${Math.round(item.rect.height)}`,
-    `- **Viewport:** ${item.viewport.width}×${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
-    `- **Key Styles:** ${keyStyles}`
+    `- **位置:** x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, ${Math.round(item.rect.width)}×${Math.round(item.rect.height)}`,
+    `- **视口:** ${item.viewport.width}×${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
+    `- **关键样式:** ${keyStyles}`
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 

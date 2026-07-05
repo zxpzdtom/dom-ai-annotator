@@ -1582,7 +1582,7 @@ textarea {
 .dom-ai-pin-card-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   color: #64748b;
   font-size: 12px;
   font-weight: 750;
@@ -1638,7 +1638,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: -2px 0 12px;
+  margin: 8px 0 14px;
 }
 
 .dom-ai-pin-style-changes span {

@@ -81,10 +81,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   if (message.type === "DOM_AI_FRAME_HOVER_ACTIVE") {
     const tabId = sender.tab?.id;
     if (!tabId) return;
-    void chrome.tabs.sendMessage(tabId, {
-      type: "DOM_AI_FRAME_HOVER_ACTIVE",
-      frameId: sender.frameId
-    }).catch(() => undefined);
+    void getTabFrameIds(tabId)
+      .then((frameIds) => sendMessageToFrames(tabId, frameIds, {
+        type: "DOM_AI_FRAME_HOVER_ACTIVE",
+        frameId: sender.frameId
+      }))
+      .catch(() => undefined);
     return;
   }
 
@@ -202,12 +204,30 @@ async function sendContentMessage(tabId: number, message: unknown) {
     // Some frames may be restricted; still try to message frames that are available.
   }
 
-  try {
-    await chrome.tabs.sendMessage(tabId, message);
-  } catch {
-    await injectContentScript(tabId);
-    await chrome.tabs.sendMessage(tabId, message);
+  const frameIds = await getTabFrameIds(tabId);
+  let delivered = await sendMessageToFrames(tabId, frameIds, message);
+  if (!delivered) {
+    await injectContentScript(tabId).catch(() => undefined);
+    delivered = await sendMessageToFrames(tabId, await getTabFrameIds(tabId), message);
   }
+  if (!delivered) {
+    throw new Error("No content frame accepted the message.");
+  }
+}
+
+async function getTabFrameIds(tabId: number): Promise<number[]> {
+  const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => undefined);
+  const ids = frames
+    ?.map((frame) => frame.frameId)
+    .filter((frameId): frameId is number => typeof frameId === "number");
+  return ids?.length ? Array.from(new Set(ids)) : [0];
+}
+
+async function sendMessageToFrames(tabId: number, frameIds: number[], message: unknown): Promise<boolean> {
+  const results = await Promise.allSettled(
+    frameIds.map((frameId) => chrome.tabs.sendMessage(tabId, message, { frameId }))
+  );
+  return results.some((result) => result.status === "fulfilled");
 }
 
 async function injectContentScript(tabId: number) {

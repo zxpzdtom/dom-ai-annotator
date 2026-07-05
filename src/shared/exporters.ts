@@ -7,6 +7,7 @@ import {
   parseStyleChanges,
   stripGeneratedStyleComment
 } from "./styleChanges";
+import { describeElementForDisplay, getAnnotationCodeSearchHints } from "./annotationDisplay";
 
 export function exportAnnotationsAsJson(annotations: DomAnnotation[]): string {
   return JSON.stringify(stripScreenshots(annotations), null, 2);
@@ -19,9 +20,9 @@ export function exportAnnotationsAsMarkdown(
   const visible = stripScreenshots(annotations).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   return [
-    "# 给 AI 实现的 UI 反馈",
+    "# 给 AI 实现的界面反馈",
     "",
-    "请修复下面的 UI 反馈。请结合 selector、DOM 上下文、元素位置和视觉说明定位相关组件。修改完成后，总结哪些标注已解决，并说明无法安全修改的内容。",
+    "请修复下面的界面反馈。请结合选择器、DOM 上下文、元素位置和视觉说明定位相关组件。修改完成后，总结哪些标注已解决，并说明无法安全修改的内容。",
     "",
     ...visible.flatMap((item, index) => [
       `## ${index + 1}. ${formatAnnotationHeading(item)}`,
@@ -29,14 +30,15 @@ export function exportAnnotationsAsMarkdown(
       `- 状态: ${statusLabels[normalizeStatus(item.status)]}`,
       `- URL: ${item.url}`,
       `- 页面标题: ${item.title || "未命名页面"}`,
-      item.context ? `- 页面上下文: ${formatPageContext(item)}` : undefined,
-      `- Selector: \`${item.selector}\``,
+      formatPageContext(item) ? `- 页面上下文: ${formatPageContext(item)}` : undefined,
+      `- 选择器: \`${item.selector}\``,
       item.xpath ? `- XPath: \`${item.xpath}\`` : undefined,
       `- 元素: \`${describeElement(item)}\``,
-      `- 位置: x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, width=${Math.round(item.rect.width)}, height=${Math.round(item.rect.height)}`,
+      `- 位置: x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, 宽=${Math.round(item.rect.width)}, 高=${Math.round(item.rect.height)}`,
       `- 视口: ${item.viewport.width}x${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
       `- 优先级: ${severityLabels[item.feedback.severity]}`,
       `- 关键样式: ${formatKeyStyles(item)}`,
+      getAnnotationCodeSearchHints(item).length ? `- 代码搜索线索: ${getAnnotationCodeSearchHints(item).join("；")}` : undefined,
       item.styleChanges?.length ? `- 样式变更: ${formatStyleChanges(item.styleChanges)}` : undefined,
       item.references?.length ? `- 引用对象: ${item.references.map((reference) => reference.label).join(", ")}` : undefined,
       "",
@@ -88,7 +90,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
     const bodyEnd = headings[index + 1]?.index ?? markdown.length;
     const body = markdown.slice(bodyStart, bodyEnd);
     const url = getMarkdownBullet(body, "URL");
-    const selector = getMarkdownCodeBullet(body, "Selector");
+    const selector = getMarkdownCodeBulletAny(body, ["选择器", "Selector"]);
     const rect = parseMarkdownRect(getMarkdownBullet(body, "位置"));
     const viewport = parseMarkdownViewport(getMarkdownBullet(body, "视口"));
     const styleChanges = parseStyleChanges(getMarkdownBullet(body, "样式变更"));
@@ -98,7 +100,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
     if (!url || !selector || !rect || !viewport || (!comment.trim() && !styleChanges.length)) continue;
 
     const now = new Date().toISOString();
-    const xpath = getMarkdownCodeBullet(body, "XPath");
+    const xpath = getMarkdownCodeBulletAny(body, ["XPath"]);
     const element = parseMarkdownElement(getMarkdownCodeBullet(body, "元素"));
     const severity = parseSeverityLabel(getMarkdownBullet(body, "优先级"));
     const status = parseStatusLabel(getMarkdownBullet(body, "状态"));
@@ -163,6 +165,19 @@ function getMarkdownCodeBullet(markdown: string, label: string): string | undefi
   return value?.match(/^`([\s\S]*)`$/)?.[1] ?? value;
 }
 
+function getMarkdownBulletAny(markdown: string, labels: string[]): string | undefined {
+  for (const label of labels) {
+    const value = getMarkdownBullet(markdown, label);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function getMarkdownCodeBulletAny(markdown: string, labels: string[]): string | undefined {
+  const value = getMarkdownBulletAny(markdown, labels);
+  return value?.match(/^`([\s\S]*)`$/)?.[1] ?? value;
+}
+
 function getMarkdownBlock(markdown: string, label: string): string | undefined {
   const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = markdown.match(new RegExp(`\\*\\*${escapedLabel}\\*\\*\\s*\\n\\s*([\\s\\S]*?)(?=\\n##\\s+\\d+\\.|\\n\\*\\*[^\\n]+\\*\\*|\\s*$)`));
@@ -170,7 +185,7 @@ function getMarkdownBlock(markdown: string, label: string): string | undefined {
 }
 
 function parseMarkdownRect(value?: string): DomAnnotation["rect"] | undefined {
-  const match = value?.match(/x=(-?\d+(?:\.\d+)?),\s*y=(-?\d+(?:\.\d+)?),\s*width=(-?\d+(?:\.\d+)?),\s*height=(-?\d+(?:\.\d+)?)/);
+  const match = value?.match(/x=(-?\d+(?:\.\d+)?),\s*y=(-?\d+(?:\.\d+)?),\s*(?:width|宽)=(-?\d+(?:\.\d+)?),\s*(?:height|高)=(-?\d+(?:\.\d+)?)/);
   if (!match) return undefined;
   const [, x, y, width, height] = match;
   return {
@@ -250,7 +265,7 @@ function parseReferencedObjects(markdown: string | undefined, fallbackTitle: str
     const bodyEnd = headings[index + 1]?.index ?? markdown.length;
     const body = markdown.slice(bodyStart, bodyEnd);
     const url = getMarkdownBullet(body, "URL");
-    const selector = getMarkdownCodeBullet(body, "Selector");
+    const selector = getMarkdownCodeBulletAny(body, ["选择器", "Selector"]);
     const rect = parseMarkdownRect(getMarkdownBullet(body, "位置"));
     const viewport = parseMarkdownViewport(getMarkdownBullet(body, "视口"));
 
@@ -263,7 +278,7 @@ function parseReferencedObjects(markdown: string | undefined, fallbackTitle: str
       url,
       title: fallbackTitle,
       selector,
-      xpath: getMarkdownCodeBullet(body, "XPath"),
+      xpath: getMarkdownCodeBulletAny(body, ["XPath"]),
       element: parseMarkdownElement(getMarkdownCodeBullet(body, "元素")),
       rect,
       viewport,
@@ -315,21 +330,22 @@ function isDomAnnotation(value: unknown): value is DomAnnotation {
 }
 
 function describeElement(annotation: DomAnnotation): string {
-  const { element } = annotation;
-  const id = element.id ? `#${element.id}` : "";
-  const classes = element.className ? `.${element.className.trim().split(/\s+/).slice(0, 4).join(".")}` : "";
-  const label = element.ariaLabel || element.role || element.text;
-  return `${element.tag}${id}${classes}${label ? ` (${label.slice(0, 80)})` : ""}`;
+  return describeElementForDisplay(annotation);
 }
 
-function formatPageContext(annotation: DomAnnotation): string {
+function formatPageContext(annotation: DomAnnotation): string | undefined {
   const context = annotation.context;
-  if (!context) return "top";
+  if (!context || context.kind === "top") return undefined;
 
-  const parts: string[] = [context.kind];
-  if (context.topUrl && context.topUrl !== annotation.url) parts.push(`top=${context.topUrl}`);
-  if (context.hostUrl && context.hostUrl !== annotation.url) parts.push(`host=${context.hostUrl}`);
-  if (context.frameId !== undefined) parts.push(`frameId=${context.frameId}`);
+  const contextLabels: Record<string, string> = {
+    top: "主页面",
+    iframe: "iframe",
+    "micro-app": "微前端",
+    wujie: "无界子应用"
+  };
+  const parts: string[] = [contextLabels[context.kind]];
+  if (context.topUrl && context.topUrl !== annotation.url) parts.push(`顶层页面=${context.topUrl}`);
+  if (context.hostUrl && context.hostUrl !== annotation.url) parts.push(`宿主页面=${context.hostUrl}`);
   return parts.join("; ");
 }
 
@@ -373,10 +389,10 @@ function formatObjectDetails(
     `### ${title}`,
     "",
     `- URL: ${item.url}`,
-    `- Selector: \`${item.selector}\``,
+    `- 选择器: \`${item.selector}\``,
     item.xpath ? `- XPath: \`${item.xpath}\`` : undefined,
     `- 元素: \`${describeElementLike(item.element)}\``,
-    `- 位置: x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, width=${Math.round(item.rect.width)}, height=${Math.round(item.rect.height)}`,
+    `- 位置: x=${Math.round(item.rect.x)}, y=${Math.round(item.rect.y)}, 宽=${Math.round(item.rect.width)}, 高=${Math.round(item.rect.height)}`,
     `- 视口: ${item.viewport.width}x${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
     `- 关键样式: ${formatStyleSnapshot(item.computedStyles)}`
   ].filter((line): line is string => Boolean(line)).join("\n");

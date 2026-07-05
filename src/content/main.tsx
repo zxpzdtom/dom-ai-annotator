@@ -68,6 +68,7 @@ import type { AnnotationDraft, AnnotationPinAnchor, AnnotationReference, Annotat
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { getVisibleAnnotationComment } from "../shared/styleChanges";
+import { getAnnotationTitle } from "../shared/annotationDisplay";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 360;
@@ -342,6 +343,7 @@ function App() {
   const [referencePickingLabel, setReferencePickingLabel] = useState<string | null>(null);
   const [pendingReference, setPendingReference] = useState<PendingAnnotationReference | null>(null);
   const [resumePickingAfterComposer, setResumePickingAfterComposer] = useState(false);
+  const [allAnnotations, setAllAnnotations] = useState<DomAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<DomAnnotation[]>([]);
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
   const [focusedReference, setFocusedReference] = useState<AnnotationReference | null>(null);
@@ -354,6 +356,7 @@ function App() {
   const focusTimerRef = useRef<number | null>(null);
   const lastFrameHoverSignalRef = useRef(0);
   const lastChildFrameHoverAtRef = useRef(0);
+  const lastIframeEscapeForwardedAtRef = useRef(0);
 
   const clearTransientUi = useCallback(() => {
     setPicking(false);
@@ -389,6 +392,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    void chrome.runtime.sendMessage({ type: "DOM_AI_GET_PANEL_STATE" })
+      .then((response: { active?: boolean } | undefined) => {
+        if (response?.active) setPanelVisible(true);
+      })
+      .catch(() => undefined);
+  }, [setPanelVisible]);
+
+  useEffect(() => {
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ active?: boolean }>).detail;
       setPanelVisible(Boolean(detail?.active));
@@ -400,8 +411,13 @@ function App() {
 
   const refreshAnnotations = useCallback(async () => {
     const items = await getAnnotations();
+    setAllAnnotations(items);
     setAnnotations(items.filter((item) => isAnnotationForCurrentDocument(item, pageContext)));
   }, [pageContext]);
+
+  useEffect(() => {
+    if (panelActive) void refreshAnnotations();
+  }, [panelActive, refreshAnnotations]);
 
   useEffect(() => {
     void refreshAnnotations();
@@ -568,9 +584,49 @@ function App() {
       });
     };
 
+    const onIframeEscape = (event: MessageEvent) => {
+      const data = event.data as { source?: string; type?: string };
+      if (data?.source !== "DOM_AI_ANNOTATOR" || data.type !== "DOM_AI_IFRAME_ESCAPE_KEY") return;
+      if (!getIframeHostForMessageSource(event.source)) return;
+
+      event.stopPropagation();
+      if (composer) {
+        closeComposer();
+        return;
+      }
+      if (isPicking || isMeasuring) requestStopCurrentMode();
+    };
+
     window.addEventListener("message", onIframeSelection);
-    return () => window.removeEventListener("message", onIframeSelection);
-  }, [setPanelVisible]);
+    window.addEventListener("message", onIframeEscape);
+    return () => {
+      window.removeEventListener("message", onIframeSelection);
+      window.removeEventListener("message", onIframeEscape);
+    };
+  }, [composer, isMeasuring, isPicking, setPanelVisible]);
+
+  useEffect(() => {
+    if (!panelActive || !isEmbeddedFrameWindow()) return;
+
+    const forwardEscapeToParent = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.key !== "Escape") return;
+      if (isEditableEvent(event)) return;
+      const now = performance.now();
+      if (now - lastIframeEscapeForwardedAtRef.current < 50) return;
+      lastIframeEscapeForwardedAtRef.current = now;
+      window.parent.postMessage({
+        source: "DOM_AI_ANNOTATOR",
+        type: "DOM_AI_IFRAME_ESCAPE_KEY"
+      }, "*");
+    };
+
+    document.addEventListener("keydown", forwardEscapeToParent, true);
+    window.addEventListener("keydown", forwardEscapeToParent, true);
+    return () => {
+      document.removeEventListener("keydown", forwardEscapeToParent, true);
+      window.removeEventListener("keydown", forwardEscapeToParent, true);
+    };
+  }, [panelActive]);
 
   useEffect(() => {
     const cursor = panelActive && (isPicking || referencePickingLabel) ? COMMENT_CURSOR : panelActive && isMeasuring && !measurePaused ? "crosshair" : "";
@@ -887,6 +943,16 @@ function App() {
     () => [...annotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     [annotations]
   );
+  const sortedPageAnnotations = useMemo(
+    () => allAnnotations
+      .filter((item) => isAnnotationForCurrentPage(item, pageContext))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [allAnnotations, pageContext]
+  );
+  const pageAnnotationIndexById = useMemo(
+    () => new Map(sortedPageAnnotations.map((annotation, index) => [annotation.id, index])),
+    [sortedPageAnnotations]
+  );
 
   function closeComposer() {
     setComposer(null);
@@ -920,6 +986,11 @@ function App() {
   function openAnnotationEditor(id: string, items: DomAnnotation[]) {
     const annotation = items.find((item) => item.id === id);
     if (!annotation) return;
+    const inspection = getInspectionForAnnotation(annotation);
+    const draft = {
+      ...getAnnotationDraft(annotation),
+      pin: getAnnotationLivePinAnchor(annotation, inspection.documentRect)
+    };
     (document.activeElement as HTMLElement | null)?.blur?.();
     setPicking(false);
     setReferencePickingLabel(null);
@@ -934,8 +1005,8 @@ function App() {
     setHoveredAnnotationId(null);
     focusAnnotation(id, items);
     setComposer({
-      draft: getAnnotationDraft(annotation),
-      inspection: getInspectionForAnnotation(annotation),
+      draft,
+      inspection,
       editingAnnotation: annotation
     });
   }
@@ -1064,7 +1135,7 @@ function App() {
           <AnnotationPin
             key={annotation.id}
             annotation={annotation}
-            index={index}
+            index={pageAnnotationIndexById.get(annotation.id) ?? index}
             focused={focusedAnnotationId === annotation.id}
             editing={composer?.editingAnnotation?.id === annotation.id}
             onEdit={() => openAnnotationEditor(annotation.id, sortedAnnotations)}
@@ -1311,10 +1382,6 @@ function AnnotationPin({
       </section>
     </div>
   );
-}
-
-function getAnnotationTitle(annotation: DomAnnotation) {
-  return annotation.element.text || annotation.element.ariaLabel || annotation.element.role || annotation.element.tag.toUpperCase();
 }
 
 function formatRelativeTime(value: string) {
@@ -1661,7 +1728,7 @@ function Composer({
   const styleEditorRef = useRef<StyleEditorHandle | null>(null);
   const consumedReferenceNonceRef = useRef<number | null>(null);
   const completedRef = useRef(false);
-  const canSave = comment.trim().length > 0 || hasStyleChanges;
+  const canSave = comment.trim().length > 0 || styleChanges.length > 0;
   const styleEditorResetKey = state.editingAnnotation?.id ?? `${state.draft.context?.url ?? state.draft.url}|${state.draft.selector}`;
   const remoteStyleTarget = useMemo<RemoteStyleTarget | undefined>(() => {
     if (liveInspection.element || state.draft.context?.kind !== "iframe") return undefined;
@@ -3714,6 +3781,7 @@ function NumericInputControl({
   const [editing, setEditing] = useState(false);
   const numericValue = pxNumber(value);
   const displayValue = Number.isFinite(numericValue) ? `${roundToPrecision(numericValue, config.precision)}` : "";
+  const focusValueRef = useRef(displayValue);
   const [draftValue, setDraftValue] = useState(displayValue);
   const renderedValue = editing ? draftValue : displayValue;
 
@@ -3725,8 +3793,14 @@ function NumericInputControl({
     onChange(nextValue.trim());
   }, [onChange]);
 
+  const updateDraftValue = useCallback((nextValue: string) => {
+    setDraftValue(nextValue);
+    commitDraftValue(nextValue);
+  }, [commitDraftValue]);
+
   const handleFocus = useCallback(() => {
     skipBlurCommitRef.current = false;
+    focusValueRef.current = displayValue;
     setEditing(true);
     setDraftValue(displayValue);
     window.requestAnimationFrame(() => inputRef.current?.select());
@@ -3751,11 +3825,12 @@ function NumericInputControl({
     if (event.key === "Escape") {
       event.preventDefault();
       skipBlurCommitRef.current = true;
-      setDraftValue(displayValue);
+      setDraftValue(focusValueRef.current);
+      commitDraftValue(focusValueRef.current);
       setEditing(false);
       event.currentTarget.blur();
     }
-  }, [displayValue]);
+  }, [commitDraftValue]);
 
   return (
     <div className={`dom-ai-number-control ${compact ? "dom-ai-number-control-compact" : ""}`}>
@@ -3771,7 +3846,7 @@ function NumericInputControl({
         onFocus={handleFocus}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
-        onChange={(event) => setDraftValue(event.currentTarget.value)}
+        onChange={(event) => updateDraftValue(event.currentTarget.value)}
         onPointerDown={(event) => onDragStart(config, event, linkedConfigs)}
         onWheel={(event) => {
           if (event.currentTarget.ownerDocument.activeElement === event.currentTarget) {
@@ -4218,6 +4293,7 @@ function BoxSpacingPreviewInput({
   const [editing, setEditing] = useState(false);
   const numericValue = pxNumber(value);
   const displayValue = Number.isFinite(numericValue) ? `${roundToPrecision(numericValue, config.precision)}` : "";
+  const focusValueRef = useRef(displayValue);
   const [draftValue, setDraftValue] = useState(displayValue);
   const renderedValue = editing ? draftValue : displayValue;
 
@@ -4232,6 +4308,7 @@ function BoxSpacingPreviewInput({
   const handleFocus = useCallback((event: React.FocusEvent<HTMLInputElement>) => {
     event.stopPropagation();
     skipBlurCommitRef.current = false;
+    focusValueRef.current = displayValue;
     setEditing(true);
     setDraftValue(displayValue);
     window.requestAnimationFrame(() => inputRef.current?.select());
@@ -4247,6 +4324,11 @@ function BoxSpacingPreviewInput({
     onChange(draftValue.trim());
   }, [displayValue, draftValue, onChange]);
 
+  const updateDraftValue = useCallback((nextValue: string) => {
+    setDraftValue(nextValue);
+    onChange(nextValue.trim());
+  }, [onChange]);
+
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation();
     if (event.key === "Enter") {
@@ -4257,11 +4339,12 @@ function BoxSpacingPreviewInput({
     if (event.key === "Escape") {
       event.preventDefault();
       skipBlurCommitRef.current = true;
-      setDraftValue(displayValue);
+      setDraftValue(focusValueRef.current);
+      onChange(focusValueRef.current);
       setEditing(false);
       event.currentTarget.blur();
     }
-  }, [displayValue]);
+  }, [onChange]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLInputElement>) => {
     event.stopPropagation();
@@ -4283,7 +4366,7 @@ function BoxSpacingPreviewInput({
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      onChange={(event) => setDraftValue(event.currentTarget.value)}
+      onChange={(event) => updateDraftValue(event.currentTarget.value)}
       onPointerDown={handlePointerDown}
       onWheel={(event) => {
         event.stopPropagation();
@@ -4662,6 +4745,15 @@ function isAnnotationForCurrentDocument(annotation: DomAnnotation, context: Page
   return shouldHandleAnnotationAction(annotation, context);
 }
 
+function isAnnotationForCurrentPage(annotation: DomAnnotation, context: PageContext): boolean {
+  const targetContext = annotation.context;
+  const currentTopUrl = context.topUrl || context.url || location.href;
+  const targetTopUrl = targetContext?.topUrl
+    || (targetContext?.kind === "top" ? targetContext.url : undefined)
+    || annotation.url;
+  return normalizeContextUrl(targetTopUrl) === normalizeContextUrl(currentTopUrl);
+}
+
 function shouldHandleAnnotationAction(annotation: DomAnnotation, context: PageContext): boolean {
   return shouldHandleTargetContext(annotation.context, annotation.url, context);
 }
@@ -4681,15 +4773,33 @@ function shouldHandleTargetContext(targetContext: PageContext | undefined, targe
     return !isEmbeddedFrameWindow() && normalizeContextUrl(targetTopUrl) === normalizeContextUrl(currentTopUrl);
   }
 
+  const targetUrlMatches = normalizeContextUrl(targetContext.url || targetUrl) === normalizeContextUrl(context.url);
+  if (!targetUrlMatches) return false;
+
+  const targetKind = targetContext.kind;
+  const currentKind = context.kind;
+  if (targetKind === "top" || currentKind === "top") {
+    return targetKind === currentKind;
+  }
+
+  const targetTopUrl = targetContext.topUrl || targetContext.hostUrl || "";
+  const currentTopUrl = context.topUrl || context.hostUrl || "";
+  if (targetTopUrl && currentTopUrl && normalizeContextUrl(targetTopUrl) !== normalizeContextUrl(currentTopUrl)) {
+    return false;
+  }
+
   const targetFrameId = targetContext.frameId ?? (targetContext.kind === "top" ? 0 : undefined);
   const currentFrameId = context.frameId ?? (context.kind === "top" ? 0 : undefined);
 
   if (targetFrameId !== undefined || currentFrameId !== undefined) {
-    return targetFrameId === currentFrameId
-      && normalizeContextUrl(targetContext.url) === normalizeContextUrl(context.url);
+    if (targetFrameId === currentFrameId) return true;
   }
 
-  return normalizeContextUrl(targetContext.url || targetUrl) === normalizeContextUrl(context.url);
+  if (targetContext.hostSelector && context.hostSelector && targetContext.hostSelector !== context.hostSelector) {
+    return false;
+  }
+
+  return targetKind === currentKind;
 }
 
 function normalizeContextUrl(value: string | undefined): string {
