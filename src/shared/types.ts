@@ -58,6 +58,13 @@ export type AnnotationScreenshot = {
   };
 };
 
+export type AnnotationStyleChange = {
+  property: string;
+  label: string;
+  previousValue: string;
+  value: string;
+};
+
 export type DomAnnotation = {
   id: string;
   url: string;
@@ -72,6 +79,7 @@ export type DomAnnotation = {
   pin?: AnnotationPinAnchor;
   viewport: ViewportSnapshot;
   computedStyles: Record<string, string>;
+  styleChanges?: AnnotationStyleChange[];
   screenshot?: AnnotationScreenshot;
   screenshotAfter?: AnnotationScreenshot;
   references?: AnnotationReference[];
@@ -140,6 +148,8 @@ export type MonitorSnapshot = {
   enabled: boolean;
 };
 
+export type InlineStyleValueSnapshot = { value: string; priority: string } | null;
+
 export type ContentMessage =
   | { type: "DOM_AI_START_PICKING" }
   | { type: "DOM_AI_STOP_PICKING" }
@@ -153,7 +163,12 @@ export type ContentMessage =
   | { type: "DOM_AI_MONITOR_CLEAR" }
   | { type: "DOM_AI_SHOW_IMAGE_PREVIEW"; dataUrl: string }
   | { type: "DOM_AI_CLOSE_IMAGE_PREVIEW" }
-  | { type: "DOM_AI_FRAME_HOVER_ACTIVE"; frameId?: number };
+  | { type: "DOM_AI_FRAME_HOVER_ACTIVE"; frameId?: number }
+  | { type: "DOM_AI_IFRAME_SELECTION_ADOPTED"; frameId?: number }
+  | { type: "DOM_AI_REMOTE_STYLE_APPLY"; frameId?: number; selector: string; cssProperty: string; value: string }
+  | { type: "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY"; frameId?: number; selector: string; cssProperty: string; snapshot: InlineStyleValueSnapshot }
+  | { type: "DOM_AI_REMOTE_STYLE_RESTORE"; frameId?: number; selector: string; inlineStyleSnapshot: Record<string, InlineStyleValueSnapshot>; textContent?: string }
+  | { type: "DOM_AI_REMOTE_TEXT_APPLY"; frameId?: number; selector: string; value: string };
 
 export type RuntimeMessage =
   | ContentMessage

@@ -19,7 +19,7 @@ function wrapIIFE(entryNames: string[]): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), wrapIIFE(["monitorBridge", "agentBridge", "agentBridgeHost"])],
+  plugins: [react(), wrapIIFE(["monitorBridge"])],
   build: {
     emptyOutDir: true,
     outDir: "dist",
@@ -31,8 +31,6 @@ export default defineConfig({
         content: "src/content/main.tsx",
         jsonViewerVendor: "src/content/jsonViewerVendor.ts",
         monitorBridge: "src/content/monitorBridge.ts",
-        agentBridge: "src/content/agentBridge.ts",
-        agentBridgeHost: "src/content/agentBridgeHost.ts",
         background: "src/background.ts"
       },
       output: {

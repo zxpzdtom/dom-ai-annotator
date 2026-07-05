@@ -416,7 +416,7 @@ export function isIgnored(event: MonitorEvent, rules: IgnoreRules): boolean {
   return false;
 }
 
-// ─── Legacy export for agentBridge compatibility ─────────────────────────────
+// ─── Legacy custom suspicious-rule helper ────────────────────────────────────
 
 export function matchCustomSuspicious(
   event: MonitorEvent,

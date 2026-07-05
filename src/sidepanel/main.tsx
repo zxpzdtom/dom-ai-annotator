@@ -1305,6 +1305,25 @@ function AnnotationCard({
             <SeverityPill severity={annotation.feedback.severity} compact />
           </div>
           <p className="mt-1.5 line-clamp-3 whitespace-pre-line text-[14px] font-bold leading-5 text-ink-950">{annotation.feedback.comment}</p>
+          {annotation.styleChanges?.length ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {annotation.styleChanges.slice(0, 3).map((change) => (
+                <span
+                  key={change.property}
+                  className="inline-flex h-6 max-w-full items-center gap-1 rounded-md bg-ink-50 px-1.5 font-mono text-[10px] font-extrabold text-ink-700 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
+                  title={`${change.previousValue || "-"} -> ${change.value || "-"}`}
+                >
+                  <span className="shrink-0 font-sans text-ink-400">{change.label}</span>
+                  <span className="min-w-0 truncate">{change.value || "-"}</span>
+                </span>
+              ))}
+              {annotation.styleChanges.length > 3 ? (
+                <span className="inline-flex h-6 items-center rounded-md bg-ink-50 px-1.5 text-[10px] font-extrabold text-ink-500">
+                  +{annotation.styleChanges.length - 3}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           {annotation.references?.length ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {annotation.references.slice(0, 3).map((reference) => (
@@ -2522,6 +2541,7 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     `- **Severity:** ${severityLabels[annotation.feedback.severity]}`,
     `- **Status:** ${statusLabels[status]}`,
     `- **Key Styles:** ${keyStyles}`,
+    annotation.styleChanges?.length ? `- **Requested Style Changes:** ${formatAnnotationStyleChanges(annotation.styleChanges)}` : undefined,
     annotation.references?.length ? `- **Reference Objects:** ${annotation.references.length}` : undefined,
     "",
     "### Full Comment",
@@ -2531,9 +2551,12 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     annotation.feedback.expected ? `\n### Expected\n\n${annotation.feedback.expected}` : undefined,
     "",
     "---",
-    "After fixing, mark resolved via:",
-    `\`window.__domAiAPI.resolveAnnotation("${annotation.id}")\``,
+    "After fixing, update the item status in DOM Review.",
   ].filter((l): l is string => l !== undefined).join("\n");
+}
+
+function formatAnnotationStyleChanges(changes: NonNullable<DomAnnotation["styleChanges"]>): string {
+  return changes.map((change) => `${change.property}: ${change.previousValue || "-"} -> ${change.value || "-"}`).join("; ");
 }
 
 function formatAnnotationObjectsForPrompt(annotation: DomAnnotation): string {

@@ -14,16 +14,23 @@ const STYLE_PROPS = [
   "lineHeight",
   "color",
   "backgroundColor",
+  "textAlign",
   "border",
   "borderRadius",
+  "borderColor",
+  "borderWidth",
   "boxShadow",
   "opacity",
   "zIndex",
   "alignItems",
   "justifyContent",
   "gap",
+  "rowGap",
+  "columnGap",
   "flexDirection",
-  "gridTemplateColumns"
+  "gridAutoFlow",
+  "gridTemplateColumns",
+  "gridTemplateRows"
 ];
 
 const STABLE_SELECTOR_ATTRIBUTES = [

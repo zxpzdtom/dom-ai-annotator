@@ -1,18 +1,76 @@
 import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { ChevronDown, Code2, Link2, MessageCircle, Palette, Ruler, Trash2, Type, X } from "lucide-react";
+import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
+  Check,
+  ChevronDown,
+  Link2,
+  MessageCircle,
+  RotateCcw,
+  Ruler,
+  Settings2,
+  X
+} from "lucide-react";
 import cssText from "./content.css?inline";
+import { MEASURE_COLORS, getElementDistanceLines } from "./measurementModel";
+import type { MeasurementLine, PinnedMeasurement } from "./measurementModel";
 import { createAnnotationDraft, getCssSelector, querySelectorDeep } from "./selector";
+import {
+  FONT_WEIGHT_OPTIONS,
+  applyEditableStyleValue,
+  captureInlineStyleSnapshot,
+  compactPxNumber,
+  createEditableStyleValues,
+  cssColorToNativeInput,
+  formatColor,
+  formatNumericStyleValue,
+  formatStyleChangeComment,
+  getBoxValue,
+  getComputedBoxSnapshot,
+  getEditableElementText,
+  getEditableStyleChanges,
+  getElementStyleTitle,
+  getNumericAdjusterConfigs,
+  isLayoutStyleRelevant,
+  isTextContentEditable,
+  isTextStyleRelevant,
+  pxNumber,
+  restoreInlineStyle,
+  restoreInlineStyleSnapshot,
+  roundToPrecision,
+  setEditableElementText,
+  styleValueMatches,
+  swatchBackground
+} from "./styleModel";
+import type {
+  ActiveNumericScrub,
+  BoxSpacingProperty,
+  EditableStyleValues,
+  HoverInspection,
+  IframeSelectionPayload,
+  InlineStyleSnapshot,
+  NumericAdjusterConfig,
+  NumericAdjusterConfigs,
+  NumericChangeHandler,
+  NumericDragHandler,
+  RectSnapshot,
+  SerializableHoverInspection,
+  StyleEditorHandle
+} from "./styleTypes";
 import { isExcludedUrl } from "../shared/excludedUrls";
-import type { AnnotationDraft, AnnotationPinAnchor, AnnotationReference, AnnotationScreenshot, AnnotationStatus, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
-import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationFeedback, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
+import type { AnnotationDraft, AnnotationPinAnchor, AnnotationReference, AnnotationScreenshot, AnnotationStatus, AnnotationStyleChange, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
+import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
-import { writeClipboardText } from "../shared/clipboard";
 
 const ROOT_ID = "dom-ai-annotator-root";
-const COMPOSER_WIDTH = 430;
+const COMPOSER_WIDTH = 360;
 const COMPOSER_ESTIMATED_HEIGHT = 400;
 const COMPOSER_MIN_VISIBLE_HEIGHT = 360;
+const COMPOSER_COMPACT_ESTIMATED_HEIGHT = 62;
 const EDGE_GAP = 16;
 const PIN_COLLAPSED_WIDTH = 44;
 const PIN_COLLAPSED_HEIGHT = 38;
@@ -24,12 +82,46 @@ const HOVER_LABEL_HEIGHT = 34;
 const HOVER_LABEL_MAX_WIDTH = 320;
 const HOVER_LABEL_VIEWPORT_GAP = 8;
 const MAX_ANNOTATION_SCREENSHOT_DIMENSION = 960;
-const MEASURE_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#ea580c", "#0891b2", "#16a34a"];
 const MONITOR_SCRIPT_ID = "dom-ai-monitor-bridge-script";
 const MAX_MONITOR_EVENTS = 400;
 const MONITOR_EVENT_NAME = "dom-ai-monitor-event";
 const INITIAL_PIN_REFRESH_DELAYS = [250, 800, 1800, 3500, 6000];
 const PANEL_VISIBILITY_EVENT = "dom-ai-panel-visibility";
+const FLEX_DIRECTION_OPTIONS: SelectStyleOption[] = [
+  { value: "row", label: "水平" },
+  { value: "column", label: "垂直" },
+  { value: "row-reverse", label: "水平反向" },
+  { value: "column-reverse", label: "垂直反向" }
+];
+const GRID_AUTO_FLOW_OPTIONS: SelectStyleOption[] = [
+  { value: "row", label: "水平" },
+  { value: "row-reverse", label: "水平反向" },
+  { value: "column", label: "垂直" },
+  { value: "column-reverse", label: "垂直反向" }
+];
+const JUSTIFY_CONTENT_OPTIONS: SelectStyleOption[] = [
+  { value: "flex-start", label: "开始" },
+  { value: "center", label: "居中" },
+  { value: "flex-end", label: "结束" },
+  { value: "space-between", label: "两端对齐" },
+  { value: "space-around", label: "四周留白" },
+  { value: "space-evenly", label: "均匀分布" }
+];
+const ALIGN_ITEMS_OPTIONS: SelectStyleOption[] = [
+  { value: "flex-start", label: "起始" },
+  { value: "center", label: "居中" },
+  { value: "flex-end", label: "结束" },
+  { value: "stretch", label: "拉伸" },
+  { value: "baseline", label: "基线" }
+];
+const DEFAULT_FONT_FAMILY_OPTIONS: SelectStyleOption[] = [
+  { value: "Inter", label: "Inter" },
+  { value: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif", label: "System" },
+  { value: "Arial", label: "Arial" },
+  { value: "serif", label: "Serif" },
+  { value: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", label: "Mono" }
+];
+const PAGE_FONT_SCAN_LIMIT = 3000;
 const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
     <path d="M8.2 25.8v-5.2A8.7 8.7 0 0 1 5.5 14.2C5.5 9 9.7 5 15.1 5h4.7c5.4 0 9.7 4 9.7 9.2s-4.3 9.2-9.7 9.2h-6.4l-5.2 2.4Z" fill="white" stroke="black" stroke-width="3.2" stroke-linejoin="round"/>
@@ -38,12 +130,20 @@ const COMMENT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
     <path d="M8.2 25.8v-5.2" stroke="#0f9f78" stroke-width="1.4" stroke-linecap="round"/>
   </svg>`
 )}") 9 9, crosshair`;
+const NUMERIC_SCRUB_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+    <path d="M8 1 11 4H9v4H7V4H5l3-3Z" fill="#475569"/>
+    <path d="M8 15 5 12h2V8h2v4h2l-3 3Z" fill="#475569"/>
+  </svg>`
+)}") 8 8, ns-resize`;
 
 type ComposerState = {
   draft: AnnotationDraft;
   inspection: HoverInspection;
   initialScreenshot?: AnnotationScreenshot;
   editingAnnotation?: DomAnnotation;
+  remoteInlineStyleSnapshot?: InlineStyleSnapshot;
+  fontFamilies?: string[];
 };
 
 type PendingAnnotationReference = AnnotationReference & {
@@ -63,38 +163,16 @@ type ReferenceTextEditorHandle = {
   insertToken: (token: ReferenceEditorToken) => void;
 };
 
-type HoverInspection = {
-  key: string;
+type SelectStyleOption = {
+  value: string;
   label: string;
-  element?: Element;
-  viewportRect: RectSnapshot;
-  documentRect: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  fontSize: string;
-  lineHeight: string;
-  fontWeight: string;
-  fontFamily: string;
-  color: string;
-  backgroundColor: string;
-  display: string;
-  position: string;
-  opacity: string;
-  zIndex: string;
-  gap: string;
-  margin: string;
-  padding: string;
-  borderRadius: string;
 };
 
-type RectSnapshot = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+type RemoteStyleTarget = {
+  frameId?: number;
+  selector: string;
+  inlineStyleSnapshot: InlineStyleSnapshot;
+  textContent: string;
 };
 
 type ViewportOffset = {
@@ -102,31 +180,10 @@ type ViewportOffset = {
   y: number;
 };
 
-type MeasurementLine = {
-  key: string;
-  orientation: "horizontal" | "vertical";
-  x: number;
-  y: number;
-  length: number;
-  label: string;
-  labelX: number;
-  labelY: number;
-};
-
-type PinnedMeasurement = {
-  key: string;
-  color: string;
-  from: HoverInspection;
-  to: HoverInspection;
-  measurements: MeasurementLine[];
-};
-
 type DocumentSize = {
   width: number;
   height: number;
 };
-
-type ColorMode = "rgb" | "hex" | "hsl";
 
 let monitorEnabled = false;
 let monitorEvents: MonitorEvent[] = [];
@@ -174,6 +231,68 @@ window.addEventListener("message", (event) => {
   window.dispatchEvent(new CustomEvent(MONITOR_EVENT_NAME, { detail: item }));
   void chrome.runtime.sendMessage({ type: "DOM_AI_MONITOR_EVENT", event: item });
 });
+
+function postIframeSelectionToParent(payload: IframeSelectionPayload) {
+  if (!isEmbeddedFrameWindow()) return false;
+  window.parent.postMessage({
+    source: "DOM_AI_ANNOTATOR",
+    type: "DOM_AI_IFRAME_SELECTION_READY",
+    payload
+  }, "*");
+  return true;
+}
+
+function shouldHandleRemoteStyleMessage(messageFrameId: number | undefined, context: PageContext): boolean {
+  return context.frameId !== undefined && messageFrameId === context.frameId;
+}
+
+function getRemoteStyleElement(selector: string): HTMLElement | null {
+  const element = querySelectorDeep(selector);
+  return element instanceof HTMLElement ? element : null;
+}
+
+function applyRemoteStyleMessage(
+  message: Extract<ContentMessage, { type: "DOM_AI_REMOTE_STYLE_APPLY" }>,
+  context: PageContext
+) {
+  if (!shouldHandleRemoteStyleMessage(message.frameId, context)) return;
+  const element = getRemoteStyleElement(message.selector);
+  if (!element) return;
+  applyEditableStyleValue(element, message.cssProperty, message.value);
+}
+
+function restoreRemoteStylePropertyMessage(
+  message: Extract<ContentMessage, { type: "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY" }>,
+  context: PageContext
+) {
+  if (!shouldHandleRemoteStyleMessage(message.frameId, context)) return;
+  const element = getRemoteStyleElement(message.selector);
+  if (!element) return;
+  restoreInlineStyle(element, message.cssProperty, message.snapshot);
+}
+
+function restoreRemoteStyleMessage(
+  message: Extract<ContentMessage, { type: "DOM_AI_REMOTE_STYLE_RESTORE" }>,
+  context: PageContext
+) {
+  if (!shouldHandleRemoteStyleMessage(message.frameId, context)) return;
+  const element = getRemoteStyleElement(message.selector);
+  if (!element) return;
+  restoreInlineStyleSnapshot(element, message.inlineStyleSnapshot);
+  if (message.textContent !== undefined && isTextContentEditable(getElementInspection(element))) {
+    setEditableElementText(element, message.textContent);
+  }
+}
+
+function applyRemoteTextMessage(
+  message: Extract<ContentMessage, { type: "DOM_AI_REMOTE_TEXT_APPLY" }>,
+  context: PageContext
+) {
+  if (!shouldHandleRemoteStyleMessage(message.frameId, context)) return;
+  const element = getRemoteStyleElement(message.selector);
+  if (!element || !isTextContentEditable(getElementInspection(element))) return;
+  setEditableElementText(element, message.value);
+}
 
 function getMonitorSnapshot(): MonitorSnapshot {
   return {
@@ -231,6 +350,7 @@ function App() {
   const showFrameToolbar = !isEmbeddedFrameWindow();
   const focusTimerRef = useRef<number | null>(null);
   const lastFrameHoverSignalRef = useRef(0);
+  const lastChildFrameHoverAtRef = useRef(0);
 
   const clearTransientUi = useCallback(() => {
     setPicking(false);
@@ -320,17 +440,21 @@ function App() {
     const listener = (message: ContentMessage, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
       if (message.type === "DOM_AI_START_PICKING") {
         setPanelVisible(true);
+        setComposer(null);
         setMeasuring(false);
         setReferencePickingLabel(null);
+        setPendingReference(null);
         setResumePickingAfterComposer(false);
         setMeasureAnchor(null);
         setMeasureHover(null);
         setMeasurePaused(false);
+        setHoverInspection(null);
         setPicking(true);
       }
       if (message.type === "DOM_AI_STOP_PICKING") {
         setPicking(false);
         setResumePickingAfterComposer(false);
+        setHoverInspection(null);
       }
       if (message.type === "DOM_AI_START_MEASURING") {
         setPanelVisible(true);
@@ -350,8 +474,27 @@ function App() {
         setMeasurePaused(false);
       }
       if (message.type === "DOM_AI_FRAME_HOVER_ACTIVE" && message.frameId !== pageContext.frameId) {
+        lastChildFrameHoverAtRef.current = performance.now();
         setHoverInspection(null);
         setMeasureHover(null);
+      }
+      if (message.type === "DOM_AI_IFRAME_SELECTION_ADOPTED" && message.frameId !== pageContext.frameId) {
+        setPicking(false);
+        setReferencePickingLabel(null);
+        setResumePickingAfterComposer(false);
+        setHoverInspection(null);
+      }
+      if (message.type === "DOM_AI_REMOTE_STYLE_APPLY") {
+        applyRemoteStyleMessage(message, pageContext);
+      }
+      if (message.type === "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY") {
+        restoreRemoteStylePropertyMessage(message, pageContext);
+      }
+      if (message.type === "DOM_AI_REMOTE_STYLE_RESTORE") {
+        restoreRemoteStyleMessage(message, pageContext);
+      }
+      if (message.type === "DOM_AI_REMOTE_TEXT_APPLY") {
+        applyRemoteTextMessage(message, pageContext);
       }
       if (message.type === "DOM_AI_REFRESH_PINS") void refreshAnnotations();
       if (message.type === "DOM_AI_FOCUS_ANNOTATION") {
@@ -374,7 +517,7 @@ function App() {
         sendResponse(clearMonitor());
         return true;
       }
-      if (message.type === "DOM_AI_SHOW_IMAGE_PREVIEW") {
+      if (message.type === "DOM_AI_SHOW_IMAGE_PREVIEW" && !isEmbeddedFrameWindow()) {
         showImagePreviewOverlay(message.dataUrl);
       }
       if (message.type === "DOM_AI_CLOSE_IMAGE_PREVIEW") {
@@ -385,6 +528,41 @@ function App() {
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [annotations, refreshAnnotations, setPanelVisible]);
+
+  useEffect(() => {
+    if (isEmbeddedFrameWindow()) return;
+
+    const onIframeSelection = (event: MessageEvent) => {
+      const data = event.data as { source?: string; type?: string; payload?: IframeSelectionPayload };
+      if (data?.source !== "DOM_AI_ANNOTATOR" || data.type !== "DOM_AI_IFRAME_SELECTION_READY" || !data.payload) return;
+      const frameHost = getIframeHostForMessageSource(event.source);
+      if (!frameHost) return;
+
+      event.stopPropagation();
+      const composerState = createTopComposerStateFromIframeSelection(data.payload, frameHost);
+      setPanelVisible(true);
+      setComposer(composerState);
+      setPicking(false);
+      setReferencePickingLabel(null);
+      setResumePickingAfterComposer(false);
+      setMeasuring(false);
+      setMeasureAnchor(null);
+      setMeasureHover(null);
+      setMeasurePaused(false);
+      setHoverInspection(null);
+      void chrome.runtime.sendMessage({
+        type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+        message: { type: "DOM_AI_IFRAME_SELECTION_ADOPTED", frameId: data.payload.context.frameId }
+      });
+      void chrome.runtime.sendMessage({
+        type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+        message: { type: "DOM_AI_STOP_PICKING" }
+      });
+    };
+
+    window.addEventListener("message", onIframeSelection);
+    return () => window.removeEventListener("message", onIframeSelection);
+  }, [setPanelVisible]);
 
   useEffect(() => {
     const cursor = panelActive && (isPicking || referencePickingLabel) ? COMMENT_CURSOR : panelActive && isMeasuring && !measurePaused ? "crosshair" : "";
@@ -439,7 +617,7 @@ function App() {
       notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setHoverInspection(null);
         return;
       }
@@ -453,15 +631,13 @@ function App() {
       if (isInjectedEvent(event)) return;
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setHoverInspection(null);
         return;
       }
       event.preventDefault();
       event.stopPropagation();
       suppressNextPageClick();
-      setResumePickingAfterComposer(true);
-      setPicking(false);
       const inspection = getElementInspection(element);
       const context = getAnnotationPageContext(element, await getFramePageContext());
       void chrome.runtime.sendMessage({ type: "DOM_AI_PAGE_CONTEXT_SELECTED", context });
@@ -469,22 +645,50 @@ function App() {
         x: event.clientX + window.scrollX,
         y: event.clientY + window.scrollY
       }), context);
+      if (postIframeSelectionToParent({
+        draft,
+        inspection: serializeHoverInspection(inspection),
+        inlineStyleSnapshot: element instanceof HTMLElement ? captureInlineStyleSnapshot(element) : {},
+        fontFamilies: getPageFontFamilyOptions().map((option) => option.value),
+        pointerViewport: { x: event.clientX, y: event.clientY, width: 0, height: 0 },
+        context
+      })) {
+        setResumePickingAfterComposer(false);
+        setPicking(false);
+        setHoverInspection(null);
+        void chrome.runtime.sendMessage({
+          type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+          message: { type: "DOM_AI_IFRAME_SELECTION_ADOPTED", frameId: context.frameId }
+        });
+        void chrome.runtime.sendMessage({
+          type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+          message: { type: "DOM_AI_STOP_PICKING" }
+        });
+        return;
+      }
+
+      setResumePickingAfterComposer(true);
+      setPicking(false);
       const initialScreenshot = await captureAnnotationScreenshotData(draft.selector, draft.rect);
       setComposer({
         draft,
         inspection,
         initialScreenshot
       });
+      void chrome.runtime.sendMessage({
+        type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+        message: { type: "DOM_AI_STOP_PICKING" }
+      });
     };
 
     const onClick = (event: MouseEvent) => {
-      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) return;
       event.preventDefault();
       event.stopPropagation();
     };
 
     const onOut = (event: MouseEvent) => {
-      if (isPointerLeavingForEmbeddedContent(event)) setHoverInspection(null);
+      if (isPointerLeavingForEmbeddedContent(event, lastChildFrameHoverAtRef.current)) setHoverInspection(null);
     };
 
     const onKey = (event: KeyboardEvent) => {
@@ -521,7 +725,7 @@ function App() {
       notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setHoverInspection(null);
         return;
       }
@@ -534,7 +738,7 @@ function App() {
       if (isInjectedEvent(event)) return;
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setHoverInspection(null);
         return;
       }
@@ -553,13 +757,13 @@ function App() {
     };
 
     const onClick = (event: MouseEvent) => {
-      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) return;
       event.preventDefault();
       event.stopPropagation();
     };
 
     const onOut = (event: MouseEvent) => {
-      if (isPointerLeavingForEmbeddedContent(event)) setHoverInspection(null);
+      if (isPointerLeavingForEmbeddedContent(event, lastChildFrameHoverAtRef.current)) setHoverInspection(null);
     };
 
     const onKey = (event: KeyboardEvent) => {
@@ -598,7 +802,7 @@ function App() {
       notifyFrameHoverActive(pageContext, lastFrameHoverSignalRef);
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setMeasureHover(null);
         return;
       }
@@ -611,7 +815,7 @@ function App() {
       if (isInjectedEvent(event)) return;
       const element = getTargetElement(event);
       if (!element) return;
-      if (shouldDeferPointerToEmbeddedContent(event)) {
+      if (shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) {
         setMeasureHover(null);
         return;
       }
@@ -638,13 +842,13 @@ function App() {
     };
 
     const onClick = (event: MouseEvent) => {
-      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event)) return;
+      if (isInjectedEvent(event) || shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAtRef.current)) return;
       event.preventDefault();
       event.stopPropagation();
     };
 
     const onOut = (event: MouseEvent) => {
-      if (isPointerLeavingForEmbeddedContent(event)) setMeasureHover(null);
+      if (isPointerLeavingForEmbeddedContent(event, lastChildFrameHoverAtRef.current)) setMeasureHover(null);
     };
 
     const onKey = (event: KeyboardEvent) => {
@@ -708,6 +912,7 @@ function App() {
   function openAnnotationEditor(id: string, items: DomAnnotation[]) {
     const annotation = items.find((item) => item.id === id);
     if (!annotation) return;
+    (document.activeElement as HTMLElement | null)?.blur?.();
     setPicking(false);
     setReferencePickingLabel(null);
     setResumePickingAfterComposer(false);
@@ -715,6 +920,10 @@ function App() {
     setMeasureAnchor(null);
     setMeasureHover(null);
     setMeasurePaused(false);
+    setHoverInspection(null);
+    setFocusedAnnotationId(null);
+    setFocusedReference(null);
+    setHoveredAnnotationId(null);
     focusAnnotation(id, items);
     setComposer({
       draft: getAnnotationDraft(annotation),
@@ -834,12 +1043,20 @@ function App() {
           <FocusedAnnotationOverlay annotation={sortedAnnotations.find((item) => item.id === hoveredAnnotationId)} subtle />
         ) : null}
 
+        {composer ? (
+          <div
+            className="dom-ai-highlight"
+            style={getHighlightStyle(composer.inspection)}
+          />
+        ) : null}
+
         {sortedAnnotations.map((annotation, index) => (
           <AnnotationPin
             key={annotation.id}
             annotation={annotation}
             index={index}
             focused={focusedAnnotationId === annotation.id}
+            editing={composer?.editingAnnotation?.id === annotation.id}
             onEdit={() => openAnnotationEditor(annotation.id, sortedAnnotations)}
             onStatusChange={async (status) => {
               await updateAnnotationStatus(annotation.id, status);
@@ -905,6 +1122,7 @@ function AnnotationPin({
   annotation,
   index,
   focused,
+  editing,
   onEdit,
   onStatusChange,
   onDelete,
@@ -913,6 +1131,7 @@ function AnnotationPin({
   annotation: DomAnnotation;
   index: number;
   focused: boolean;
+  editing: boolean;
   onEdit: () => void;
   onStatusChange: (status: AnnotationStatus) => void;
   onDelete: () => void;
@@ -935,7 +1154,7 @@ function AnnotationPin({
 
   return (
     <div
-      className={`dom-ai-pin dom-ai-pin-placement-${position.placement} dom-ai-pin-card-side-${position.cardSide} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""}`}
+      className={`dom-ai-pin dom-ai-pin-placement-${position.placement} dom-ai-pin-card-side-${position.cardSide} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${editing ? "dom-ai-pin-editing" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""}`}
       style={style}
       onMouseEnter={() => {
         setIsDismissed(false);
@@ -988,6 +1207,17 @@ function AnnotationPin({
             <span>{formatRelativeTime(annotation.updatedAt)}</span>
           </div>
           <p>{annotation.feedback.comment}</p>
+          {annotation.styleChanges?.length ? (
+            <div className="dom-ai-pin-style-changes" aria-label="样式变更">
+              {annotation.styleChanges.slice(0, 3).map((change) => (
+                <span key={change.property} title={`${change.previousValue || "-"} -> ${change.value || "-"}`}>
+                  <b>{change.label}</b>
+                  {change.value || "-"}
+                </span>
+              ))}
+              {annotation.styleChanges.length > 3 ? <span>+{annotation.styleChanges.length - 3}</span> : null}
+            </div>
+          ) : null}
           <span className="dom-ai-pin-card-caption">状态</span>
           <div className="dom-ai-pin-status-row">
             {statusOptions.map((status) => {
@@ -1073,13 +1303,24 @@ function FloatingToolBar({
   onCancel: () => void;
 }) {
   if (isPicking || isMeasuring) {
+    const modeBarShadow = isMeasuring
+      ? "shadow-[0_18px_48px_rgba(14,165,233,0.18),0_0_0_1.5px_rgba(56,189,248,0.62),inset_0_1px_0_rgba(255,255,255,0.26),inset_0_-1px_0_rgba(0,0,0,0.18)]"
+      : "shadow-[0_18px_48px_rgba(15,159,120,0.18),0_0_0_1.5px_rgba(15,159,120,0.58),inset_0_1px_0_rgba(255,255,255,0.26),inset_0_-1px_0_rgba(0,0,0,0.18)]";
+    const modeIndicatorClass = isMeasuring
+      ? "grid h-[30px] w-[30px] place-items-center rounded-full text-sky-400 shadow-[inset_0_0_0_4px_rgba(56,189,248,0.22)]"
+      : "grid h-[30px] w-[30px] place-items-center rounded-full text-[#2dd4aa] shadow-[inset_0_0_0_4px_rgba(15,159,120,0.24)]";
+
     return (
-      <div className={`dom-ai-mode-bar dom-ai-interactive ${isMeasuring ? "dom-ai-mode-bar-measuring" : ""}`}>
-        <span className="dom-ai-mode-indicator">
+      <div className={`dom-ai-interactive fixed bottom-[max(18px,env(safe-area-inset-bottom))] left-1/2 z-[2147483647] inline-flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-3 rounded-full bg-slate-950/75 px-2.5 py-2 text-white backdrop-blur-3xl backdrop-saturate-150 max-[520px]:left-4 max-[520px]:right-4 max-[520px]:translate-x-0 ${modeBarShadow}`}>
+        <span className={modeIndicatorClass}>
           {isPicking ? <ReviewCursorIcon /> : <Ruler size={18} />}
         </span>
-        <span className="dom-ai-mode-title">{isPicking ? "选择需要标注的元素" : "选择元素测量距离"}</span>
-        <button type="button" className="dom-ai-mode-cancel" onClick={onCancel}>
+        <span className="min-w-0 truncate text-[15px] font-[850] leading-none text-white/90">{isPicking ? "选择需要标注的元素" : "选择元素测量距离"}</span>
+        <button
+          type="button"
+          className="inline-flex h-9 items-center gap-2 rounded-full border-0 bg-white/10 px-3 text-[13px] font-[850] text-white/90 transition-[background-color,transform] duration-150 hover:bg-white/15 active:scale-[0.96] [&_kbd]:inline-flex [&_kbd]:h-[22px] [&_kbd]:items-center [&_kbd]:rounded-[7px] [&_kbd]:bg-white/10 [&_kbd]:px-[7px] [&_kbd]:text-xs [&_kbd]:font-black [&_kbd]:leading-none [&_kbd]:text-white/80"
+          onClick={onCancel}
+        >
           取消
           <kbd>Esc</kbd>
         </button>
@@ -1089,11 +1330,20 @@ function FloatingToolBar({
 
   if (hidden) return null;
 
+  const toolButtonClass = [
+    "inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-full border-0 bg-transparent px-[13px]",
+    "text-sm font-[820] leading-none text-white/80 transition-[background-color,color,transform,box-shadow] duration-150",
+    "hover:bg-brand-600 hover:text-white hover:shadow-[0_10px_22px_rgba(15,159,120,0.24),inset_0_0_0_1px_rgba(255,255,255,0.28),inset_0_1px_0_rgba(255,255,255,0.18)] active:translate-y-px",
+    "[&_svg]:shrink-0 [&_kbd]:inline-flex [&_kbd]:h-[22px] [&_kbd]:min-w-[22px] [&_kbd]:items-center [&_kbd]:justify-center [&_kbd]:rounded-lg",
+    "[&_kbd]:bg-white/10 [&_kbd]:px-1.5 [&_kbd]:text-xs [&_kbd]:font-black [&_kbd]:leading-none [&_kbd]:text-white/80",
+    "[&_kbd]:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] hover:[&_kbd]:bg-white/20 hover:[&_kbd]:text-white"
+  ].join(" ");
+
   return (
-    <div className="dom-ai-tool-bar dom-ai-interactive">
+    <div className="dom-ai-interactive fixed bottom-[max(18px,env(safe-area-inset-bottom))] left-1/2 z-[2147483647] inline-flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-1.5 rounded-full bg-slate-950/75 p-1.5 text-white shadow-[0_18px_48px_rgba(15,23,42,0.22),0_0_0_1px_rgba(255,255,255,0.18),inset_0_1px_0_rgba(255,255,255,0.28),inset_0_-1px_0_rgba(0,0,0,0.18)] backdrop-blur-3xl backdrop-saturate-150 max-[520px]:left-4 max-[520px]:right-4 max-[520px]:max-w-none max-[520px]:translate-x-0 max-[520px]:justify-center max-[520px]:overflow-x-auto max-[520px]:[scrollbar-width:none] max-[520px]:[&::-webkit-scrollbar]:hidden">
       <button
         type="button"
-        className="dom-ai-tool-button dom-ai-tool-button-primary"
+        className={toolButtonClass}
         onClick={onPick}
       >
         <ReviewCursorIcon />
@@ -1102,14 +1352,20 @@ function FloatingToolBar({
       </button>
       <button
         type="button"
-        className="dom-ai-tool-button dom-ai-tool-button-measure"
+        className={toolButtonClass}
         onClick={onMeasure}
       >
         <Ruler size={15} />
         <span>测量</span>
         <kbd>M</kbd>
       </button>
-      <button type="button" className="dom-ai-tool-dismiss" aria-label="隐藏工具条" title="隐藏工具条" onClick={onDismiss}>
+      <button
+        type="button"
+        className="grid h-9 w-8 place-items-center rounded-full border-0 bg-transparent p-0 text-white/45 transition-[background-color,color,transform] duration-150 hover:bg-white/10 hover:text-white active:translate-y-px"
+        aria-label="隐藏工具条"
+        title="隐藏工具条"
+        onClick={onDismiss}
+      >
         <X size={14} />
       </button>
     </div>
@@ -1347,50 +1603,125 @@ function Composer({
   const [comment, setComment] = useState(state.editingAnnotation?.feedback.comment ?? "");
   const [severity, setSeverity] = useState<FeedbackSeverity>(state.editingAnnotation?.feedback.severity ?? "important");
   const [references, setReferences] = useState<AnnotationReference[]>(state.editingAnnotation?.references ?? []);
-  const [colorMode, setColorMode] = useState<ColorMode>("rgb");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [liveInspection, setLiveInspection] = useState<HoverInspection>(state.inspection);
+  const [manualPosition, setManualPosition] = useState<{ left: number; top: number } | null>(null);
+  const shouldOpenDetailsOnEdit = Boolean(state.editingAnnotation?.styleChanges?.length);
+  const [detailsOpen, setDetailsOpen] = useState(shouldOpenDetailsOnEdit);
+  const [hasStyleChanges, setHasStyleChanges] = useState(false);
+  const [styleChanges, setStyleChanges] = useState<AnnotationStyleChange[]>(state.editingAnnotation?.styleChanges ?? []);
+  const [styleScrubbing, setStyleScrubbing] = useState(false);
   const editorRef = useRef<ReferenceTextEditorHandle | null>(null);
+  const styleEditorRef = useRef<StyleEditorHandle | null>(null);
   const consumedReferenceNonceRef = useRef<number | null>(null);
-  const canSave = comment.trim().length > 0;
-  const position = getComposerPosition(state.inspection.documentRect);
+  const completedRef = useRef(false);
+  const canSave = comment.trim().length > 0 || hasStyleChanges;
+  const styleEditorResetKey = state.editingAnnotation?.id ?? `${state.draft.context?.url ?? state.draft.url}|${state.draft.selector}`;
+  const remoteStyleTarget = useMemo<RemoteStyleTarget | undefined>(() => {
+    if (liveInspection.element || state.draft.context?.kind !== "iframe") return undefined;
+    return {
+      frameId: state.draft.context.frameId,
+      selector: state.draft.selector,
+      inlineStyleSnapshot: state.remoteInlineStyleSnapshot ?? {},
+      textContent: liveInspection.textContent
+    };
+  }, [liveInspection.element, liveInspection.textContent, state.draft.context, state.draft.selector, state.remoteInlineStyleSnapshot]);
+  const shouldRevertStyleEditorOnDispose = useCallback(() => !completedRef.current, []);
+  const anchoredPosition = getComposerPosition(liveInspection.documentRect, state.draft.pin, detailsOpen);
+  const position = manualPosition ?? anchoredPosition;
   const targetToken = useMemo<ReferenceEditorToken>(() => ({
     id: "target",
     label: "对象 1",
-    title: state.inspection.label,
+    title: liveInspection.label,
     removable: false
-  }), [state.inspection.label]);
+  }), [liveInspection.label]);
   const editorTokens = useMemo<ReferenceEditorToken[]>(
     () => [targetToken, ...references.map(referenceToEditorToken)],
     [references, targetToken]
   );
 
+  const refreshLiveInspection = useCallback(() => {
+    setLiveInspection((inspection) => getLiveInspection(inspection));
+  }, []);
+
+  const getDraftForSave = useCallback(() => {
+    const element = liveInspection.element;
+    if (!element?.isConnected || isInjectedElement(element)) return state.draft;
+    return createAnnotationDraft(element, state.draft.pin, state.draft.context);
+  }, [liveInspection.element, state.draft]);
+
+  const startComposerDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPosition = position;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const next = clampComposerPosition(
+        startPosition.left + moveEvent.clientX - startX,
+        startPosition.top + moveEvent.clientY - startY,
+        detailsOpen ? COMPOSER_MIN_VISIBLE_HEIGHT : COMPOSER_COMPACT_ESTIMATED_HEIGHT
+      );
+      setManualPosition(next);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+    };
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+  }, [detailsOpen, position]);
+
   const save = useCallback(async () => {
     if (!canSave) return;
+    const trimmedComment = comment.trim();
+    const feedbackComment = trimmedComment || formatStyleChangeComment(styleChanges);
+    const savedStyleChanges = styleChanges.length ? styleChanges : undefined;
 
     if (state.editingAnnotation) {
-      await updateAnnotationFeedback(state.editingAnnotation.id, {
-        comment: comment.trim(),
-        severity,
-        references: references.length ? references : undefined
+      const now = new Date().toISOString();
+      const liveDraft = getDraftForSave();
+      await saveAnnotation({
+        ...state.editingAnnotation,
+        ...liveDraft,
+        id: state.editingAnnotation.id,
+        createdAt: state.editingAnnotation.createdAt,
+        updatedAt: now,
+        feedback: {
+          ...state.editingAnnotation.feedback,
+          comment: feedbackComment,
+          severity
+        },
+        references: references.length ? references : undefined,
+        styleChanges: savedStyleChanges,
+        status: state.editingAnnotation.status
       });
+      completedRef.current = true;
       onSaved();
       return;
     }
 
     const now = new Date().toISOString();
     const newId = crypto.randomUUID();
+    const liveDraft = getDraftForSave();
     const annotation: DomAnnotation = {
-      ...state.draft,
+      ...liveDraft,
       id: newId,
       createdAt: now,
       updatedAt: now,
       feedback: {
-        comment: comment.trim(),
+        comment: feedbackComment,
         expected: undefined,
         type: "style",
         severity
       },
       references: references.length ? references : undefined,
+      styleChanges: savedStyleChanges,
       status: "pending"
     };
     await saveAnnotation(annotation);
@@ -1398,8 +1729,15 @@ function Composer({
       await updateAnnotationScreenshot(newId, "screenshot", state.initialScreenshot);
     }
     void chrome.runtime.sendMessage({ type: "DOM_AI_ANNOTATION_SAVED", annotation });
+    completedRef.current = true;
     onSaved();
-  }, [canSave, comment, onSaved, references, severity, state.draft, state.editingAnnotation, state.initialScreenshot]);
+  }, [canSave, comment, getDraftForSave, onSaved, references, severity, state.editingAnnotation, state.initialScreenshot, styleChanges]);
+
+  const cancel = useCallback(() => {
+    styleEditorRef.current?.revertStyles();
+    completedRef.current = true;
+    onCancel();
+  }, [onCancel]);
 
   const remove = useCallback(async () => {
     if (!state.editingAnnotation) return;
@@ -1408,15 +1746,23 @@ function Composer({
       return;
     }
     await deleteAnnotation(state.editingAnnotation.id);
+    completedRef.current = true;
     onDeleted();
   }, [confirmDelete, onDeleted, state.editingAnnotation]);
 
   useEffect(() => {
+    completedRef.current = false;
     setComment(state.editingAnnotation?.feedback.comment ?? "");
     setSeverity(state.editingAnnotation?.feedback.severity ?? "important");
     setReferences(state.editingAnnotation?.references ?? []);
     setConfirmDelete(false);
-  }, [state.editingAnnotation?.id]);
+    setLiveInspection(state.inspection);
+    setManualPosition(null);
+    setDetailsOpen(Boolean(state.editingAnnotation?.styleChanges?.length));
+    setHasStyleChanges(false);
+    setStyleChanges(state.editingAnnotation?.styleChanges ?? []);
+    setStyleScrubbing(false);
+  }, [state.draft.selector, state.editingAnnotation?.id, state.inspection]);
 
   const insertReferenceToken = useCallback((token: ReferenceEditorToken) => {
     if (editorRef.current) {
@@ -1464,7 +1810,7 @@ function Composer({
         if (referencePicking) return;
         event.preventDefault();
         event.stopPropagation();
-        onCancel();
+        cancel();
         return;
       }
 
@@ -1477,93 +1823,142 @@ function Composer({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onCancel, referencePicking, save]);
+  }, [cancel, referencePicking, save]);
+
+  const composerStateClass = detailsOpen
+    ? `dom-ai-composer-expanded ${styleScrubbing ? "dom-ai-composer-style-scrubbing" : ""}`
+    : "dom-ai-composer-compact";
 
   return (
     <section
-      className="dom-ai-composer dom-ai-interactive absolute w-[430px] rounded-2xl bg-white p-2 text-ink-900 shadow-panel ring-1 ring-black/5"
+      className={`dom-ai-composer dom-ai-composer-shell t-resize dom-ai-interactive absolute text-ink-900 ${composerStateClass}`}
       data-anchor-ready="true"
       style={{
         left: position.left,
         top: position.top
       }}
     >
-      <div className="px-1 pb-1.5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand-600 text-white shadow-soft">
-                <MessageCircle size={15} strokeWidth={2.4} />
-              </span>
-              <div className="text-sm font-bold">{state.editingAnnotation ? "编辑评论" : "添加评论"}</div>
-            </div>
-            <div className="mt-1 max-w-[330px] truncate font-mono text-[11px] text-ink-500">{state.draft.selector}</div>
-          </div>
+      {!detailsOpen ? (
+        <div className="dom-ai-composer-compact-content dom-ai-content-swap">
           <button
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-900 active:scale-[0.96]"
-            aria-label="关闭编辑框"
-            onClick={onCancel}
+            type="button"
+            className="dom-ai-compact-style-button"
+            aria-label="展开样式调整"
+            title="展开样式调整"
+            onClick={() => setDetailsOpen(true)}
           >
-            <X size={16} />
+            <StyleTuneIcon size={16} />
           </button>
-        </div>
-      </div>
-
-      <div className="px-0.5 pb-1">
-        <ElementDetails inspection={state.inspection} colorMode={colorMode} onColorModeChange={setColorMode} />
-
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <label className="text-xs font-bold text-ink-700" htmlFor="dom-ai-comment">
-            评论内容
-          </label>
-        </div>
-        <ReferenceTextEditor
-          ref={editorRef}
-          resetKey={state.editingAnnotation?.id ?? state.draft.selector}
-          value={comment}
-          tokens={editorTokens}
-          placeholder="例如：把对象 1 的颜色改成对象 2 的颜色。"
-          onChange={setComment}
-          onPickReference={requestReferencePick}
-          onRemoveReference={removeReference}
-          onSave={() => void save()}
-          referencePicking={referencePicking}
-        />
-
-        <div className="mt-2.5">
-          <PriorityControl value={severity} onChange={setSeverity} />
-        </div>
-      </div>
-
-      <div className="mt-1.5 flex min-h-[38px] items-center justify-between gap-2 border-t border-ink-100 pt-1.5">
-        {state.editingAnnotation ? (
+          <input
+            className="dom-ai-compact-input"
+            value={comment}
+            placeholder={state.editingAnnotation ? "编辑评论..." : "添加评论..."}
+            onChange={(event) => setComment(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                void save();
+              }
+            }}
+          />
           <button
-            className={`inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-semibold transition-[background-color,transform] duration-150 active:scale-[0.96] ${
-              confirmDelete ? "bg-red-50 text-red-700 shadow-[inset_0_0_0_1px_rgba(185,28,28,0.18)] hover:bg-red-100" : "bg-white text-ink-500 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] hover:bg-ink-50 hover:text-red-700"
-            }`}
-            onClick={() => void remove()}
+            type="button"
+            className="dom-ai-compact-drag-button dom-ai-drag-handle"
+            aria-label="拖动评论面板"
+            title="拖动评论面板"
+            onPointerDown={startComposerDrag}
           >
-            <Trash2 size={13} />
-            {confirmDelete ? "确认删除" : "删除"}
-          </button>
-        ) : <span />}
-        <div className="flex items-center justify-end gap-2">
-          <button
-            className="inline-flex h-[30px] items-center justify-center rounded-md bg-white px-2.5 text-[11px] font-semibold leading-none text-ink-800 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.12)] transition-[background-color,transform] duration-150 hover:bg-ink-50 active:scale-[0.96]"
-            onClick={onCancel}
-          >
-            取消
+            <CodexGripDots />
           </button>
           <button
-            className="inline-flex h-[30px] items-center justify-center gap-1 rounded-md bg-brand-600 px-2.5 text-[11px] font-semibold leading-none text-white shadow-soft transition-[background-color,transform] duration-150 hover:bg-brand-700 active:scale-[0.96] disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-500"
+            type="button"
+            className="dom-ai-compact-save-button"
             disabled={!canSave}
+            aria-label="保存评论"
+            title="保存评论"
             onClick={() => void save()}
-            title="Cmd/Ctrl + Enter"
           >
-            保存
+            <Check size={14} />
           </button>
         </div>
-      </div>
+      ) : null}
+
+      {detailsOpen ? (
+        <div className="dom-ai-composer-expanded-content dom-ai-content-swap">
+          <div className="dom-ai-expanded-topbar">
+            <button
+              type="button"
+              className="dom-ai-expanded-style-button"
+              aria-label="收起样式调整"
+              title="收起样式调整"
+              onClick={() => {
+                setStyleScrubbing(false);
+                setDetailsOpen(false);
+              }}
+            >
+              <StyleTuneIcon size={16} />
+            </button>
+            <input
+              className="dom-ai-expanded-input"
+              value={comment}
+              placeholder="描述这些更改..."
+              onChange={(event) => setComment(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void save();
+                }
+              }}
+            />
+          </div>
+
+          <div
+            className="dom-ai-target-strip dom-ai-drag-handle"
+            aria-label="拖动样式面板"
+            title="拖动样式面板"
+            onPointerDown={startComposerDrag}
+          >
+            <span>{liveInspection.label}</span>
+            <CodexGripDots />
+          </div>
+
+          <StyleEditor
+            ref={styleEditorRef}
+            inspection={liveInspection}
+            resetKey={styleEditorResetKey}
+            remoteTarget={remoteStyleTarget}
+            fontFamilies={state.fontFamilies}
+            onChanged={refreshLiveInspection}
+            onDirtyChange={setHasStyleChanges}
+            onStyleChangesChange={setStyleChanges}
+            onScrubActiveChange={setStyleScrubbing}
+            shouldRevertOnDispose={shouldRevertStyleEditorOnDispose}
+          />
+
+          <div className="dom-ai-expanded-footer">
+            <button
+              type="button"
+              className="dom-ai-expanded-cancel-button"
+              onClick={cancel}
+            >
+              取消
+            </button>
+            <div className="dom-ai-expanded-footer-actions">
+              <button
+                type="button"
+                className="dom-ai-expanded-confirm-button"
+                disabled={!canSave}
+                aria-label="保存评论"
+                title="保存评论"
+                onClick={() => void save()}
+              >
+                <Check size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </section>
   );
 }
@@ -1952,6 +2347,111 @@ function getReferenceTitle(reference: AnnotationReference): string {
   return `${reference.element.tag}${id}${className}`;
 }
 
+function getInitialFontFamilyOptions(value: string, computedValue: string, pageFontFamilies?: string[]): SelectStyleOption[] {
+  const seen = new Set<string>();
+  const options: SelectStyleOption[] = [];
+  const addOption = (optionValue: string, label = optionValue) => {
+    const normalized = normalizeFontFamilyName(optionValue);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    options.push({ value: optionValue, label });
+  };
+
+  splitFontFamilyList(computedValue).forEach((family) => addOption(family));
+  if (pageFontFamilies) {
+    pageFontFamilies.forEach((family) => addOption(family));
+  } else {
+    getPageFontFamilyOptions().forEach((option) => addOption(option.value, option.label));
+  }
+  if (value) addOption(value);
+  DEFAULT_FONT_FAMILY_OPTIONS.forEach((option) => addOption(option.value, option.label));
+  return options;
+}
+
+function getPageFontFamilyOptions(): SelectStyleOption[] {
+  const seen = new Set<string>();
+  const options: SelectStyleOption[] = [];
+  const addFont = (fontFamily: string) => {
+    const families = splitFontFamilyList(fontFamily);
+    for (const family of families.length ? families : [fontFamily]) {
+      const label = normalizeFontFamilyDisplay(family);
+      const normalized = normalizeFontFamilyName(label);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      options.push({ value: label, label });
+    }
+  };
+
+  try {
+    document.fonts?.forEach((fontFace) => addFont(fontFace.family));
+  } catch {
+    // Some pages patch FontFaceSet accessors; computed styles below still cover visible fonts.
+  }
+
+  if (!document.body) return options;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  let scanned = 0;
+  let node: Node | null = walker.currentNode;
+  while (node && scanned < PAGE_FONT_SCAN_LIMIT) {
+    if (node instanceof Element && !isInjectedElement(node)) {
+      scanned += 1;
+      const style = window.getComputedStyle(node);
+      if (style.fontFamily) addFont(style.fontFamily);
+    }
+    node = walker.nextNode();
+  }
+
+  return options;
+}
+
+function mergeFontFamilyOptions(baseOptions: SelectStyleOption[], value: string): SelectStyleOption[] {
+  const seen = new Set<string>();
+  const options: SelectStyleOption[] = [];
+  const addOption = (optionValue: string, label = optionValue) => {
+    const normalized = normalizeFontFamilyName(optionValue);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    options.push({ value: optionValue, label });
+  };
+
+  baseOptions.forEach((option) => addOption(option.value, option.label));
+  if (value) addOption(value);
+  return options;
+}
+
+function splitFontFamilyList(value: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+
+  for (const char of value) {
+    if ((char === "\"" || char === "'") && (!quote || quote === char)) {
+      quote = quote ? null : char;
+      continue;
+    }
+    if (char === "," && !quote) {
+      const item = normalizeFontFamilyDisplay(current);
+      if (item) result.push(item);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  const tail = normalizeFontFamilyDisplay(current);
+  if (tail) result.push(tail);
+  return result;
+}
+
+function normalizeFontFamilyDisplay(value: string): string {
+  return value.trim().replace(/^["']|["']$/g, "");
+}
+
+function normalizeFontFamilyName(value: string): string {
+  return normalizeFontFamilyDisplay(value).toLowerCase();
+}
+
 function MeasureLayer({
   anchor,
   hover,
@@ -2056,174 +2556,1766 @@ function MeasurementPair({ pair, removable, onRemove }: { pair: PinnedMeasuremen
   );
 }
 
-function ElementDetails({
-  inspection,
-  colorMode,
-  onColorModeChange
-}: {
+const StyleEditor = React.forwardRef<StyleEditorHandle, {
   inspection: HoverInspection;
-  colorMode: ColorMode;
-  onColorModeChange: (mode: ColorMode) => void;
-}) {
-  const size = `${Math.round(inspection.documentRect.width)} x ${Math.round(inspection.documentRect.height)}`;
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const fontFamily = getPrimaryFontFamily(inspection.fontFamily);
-  const reviewSummary = [
-    size,
-    `${compactUnitValue(inspection.fontSize)} / ${compactUnitValue(inspection.lineHeight)}`,
-    fontFamily,
-    formatColor(inspection.color, "rgb"),
-    `opacity ${inspection.opacity || "-"}`
-  ].filter(Boolean).join(" · ");
-  const advancedSummary = [
-    inspection.display && `display: ${inspection.display}`,
-    inspection.position && `position: ${inspection.position}`,
-    inspection.zIndex && `z-index: ${inspection.zIndex}`,
-    inspection.gap && inspection.gap !== "normal" && `gap: ${inspection.gap}`
-  ].filter(Boolean).join(" · ");
+  resetKey: string;
+  remoteTarget?: RemoteStyleTarget;
+  fontFamilies?: string[];
+  onChanged: () => void;
+  onDirtyChange: (dirty: boolean) => void;
+  onStyleChangesChange: (changes: AnnotationStyleChange[]) => void;
+  onScrubActiveChange: (active: boolean) => void;
+  shouldRevertOnDispose: () => boolean;
+}>(function StyleEditor({
+  inspection,
+  resetKey,
+  remoteTarget,
+  fontFamilies,
+  onChanged,
+  onDirtyChange,
+  onStyleChangesChange,
+  onScrubActiveChange,
+  shouldRevertOnDispose
+}, ref) {
+  const [values, setValues] = useState<EditableStyleValues>(() => createEditableStyleValues(inspection));
+  const [baselineValues, setBaselineValues] = useState<EditableStyleValues>(() => createEditableStyleValues(inspection));
+  const [linkedBoxValues, setLinkedBoxValues] = useState({
+    size: false,
+    marginBlock: false,
+    marginInline: false,
+    paddingBlock: false,
+    paddingInline: false
+  });
+  const [activeNumericScrub, setActiveNumericScrub] = useState<ActiveNumericScrub>(null);
+  const editableElement = inspection.element instanceof HTMLElement ? inspection.element : null;
+  const inlineBaselineRef = useRef<InlineStyleSnapshot>({});
+  const sendRemoteStyleMessage = useCallback((message: ContentMessage) => {
+    if (!remoteTarget) return;
+    void chrome.runtime.sendMessage({
+      type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
+      message
+    });
+  }, [remoteTarget]);
+  const textControlsVisible = isTextStyleRelevant(inspection);
+  const textContentControlVisible = isTextContentEditable(inspection);
+  const layoutControlsVisible = isLayoutStyleRelevant(inspection);
+  const isGridLayout = inspection.display.includes("grid");
+  const isFlexLayout = inspection.display.includes("flex");
+  const directionalLayoutVisible = isGridLayout || isFlexLayout;
 
-  const copyMetric = useCallback(async (label: string, value: string) => {
-    try {
-      await writeClipboardText(`${label}: ${value || "-"}`);
-      setCopiedKey(label);
-      window.setTimeout(() => setCopiedKey(null), 900);
-    } catch {
-      setCopiedKey(null);
+  useEffect(() => {
+    const nextValues = createEditableStyleValues(inspection);
+    setValues(nextValues);
+    setBaselineValues(nextValues);
+    setLinkedBoxValues({
+      size: false,
+      marginBlock: false,
+      marginInline: false,
+      paddingBlock: false,
+      paddingInline: false
+    });
+    setActiveNumericScrub(null);
+    inlineBaselineRef.current = editableElement
+      ? captureInlineStyleSnapshot(editableElement)
+      : remoteTarget?.inlineStyleSnapshot ?? {};
+  }, [editableElement, remoteTarget?.inlineStyleSnapshot, resetKey]);
+
+  const setStyleValue = useCallback((property: keyof EditableStyleValues, cssProperty: string, value: string) => {
+    setValues((current) => ({ ...current, [property]: value }));
+    if (editableElement) {
+      applyEditableStyleValue(editableElement, cssProperty, value);
+    } else if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_STYLE_APPLY",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        cssProperty,
+        value
+      });
+    } else {
+      return;
     }
-  }, []);
+    window.requestAnimationFrame(onChanged);
+  }, [editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
+
+  const resetStyleValue = useCallback((property: keyof EditableStyleValues, cssProperty: string) => {
+    if (editableElement) {
+      restoreInlineStyle(editableElement, cssProperty, inlineBaselineRef.current[cssProperty]);
+      const nextInspection = getElementInspection(editableElement);
+      setValues(createEditableStyleValues(nextInspection));
+    } else if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        cssProperty,
+        snapshot: inlineBaselineRef.current[cssProperty] ?? null
+      });
+      setValues((current) => ({ ...current, [property]: baselineValues[property] }));
+    } else {
+      return;
+    }
+    window.requestAnimationFrame(onChanged);
+  }, [baselineValues, editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
+
+  const setTextContentValue = useCallback((value: string) => {
+    setValues((current) => ({ ...current, textContent: value }));
+    if (editableElement && isTextContentEditable(inspection)) {
+      setEditableElementText(editableElement, value);
+    } else if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_TEXT_APPLY",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        value
+      });
+    } else {
+      return;
+    }
+    window.requestAnimationFrame(onChanged);
+  }, [editableElement, inspection, onChanged, remoteTarget, sendRemoteStyleMessage]);
+
+  const resetTextContentValue = useCallback(() => {
+    if (editableElement && isTextContentEditable(inspection)) {
+      setEditableElementText(editableElement, baselineValues.textContent);
+      const nextInspection = getElementInspection(editableElement);
+      setValues(createEditableStyleValues(nextInspection));
+    } else if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_TEXT_APPLY",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        value: baselineValues.textContent
+      });
+      setValues((current) => ({ ...current, textContent: baselineValues.textContent }));
+    } else {
+      return;
+    }
+    window.requestAnimationFrame(onChanged);
+  }, [baselineValues.textContent, editableElement, inspection, onChanged, remoteTarget, sendRemoteStyleMessage]);
+
+  const setNumericValueEntries = useCallback((rawEntries: Array<readonly [NumericAdjusterConfig, number | string]>) => {
+    const entries = rawEntries.map(([item, rawValue]) => [item, formatNumericStyleValue(item, rawValue)] as const);
+
+    setValues((current) => {
+      const next = { ...current };
+      for (const [item, value] of entries) {
+        next[item.property] = value;
+      }
+      return next;
+    });
+
+    if (editableElement) {
+      for (const [item, value] of entries) {
+        applyEditableStyleValue(editableElement, item.cssProperty, value);
+      }
+    } else if (remoteTarget) {
+      for (const [item, value] of entries) {
+        sendRemoteStyleMessage({
+          type: "DOM_AI_REMOTE_STYLE_APPLY",
+          frameId: remoteTarget.frameId,
+          selector: remoteTarget.selector,
+          cssProperty: item.cssProperty,
+          value
+        });
+      }
+    } else {
+      return;
+    }
+    window.requestAnimationFrame(onChanged);
+  }, [editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
+
+  const setNumericValues = useCallback<NumericChangeHandler>((config, rawValue, linkedConfigs) => {
+    const configs = linkedConfigs?.length ? linkedConfigs : [config];
+    setNumericValueEntries(configs.map((item) => [item, rawValue] as const));
+  }, [setNumericValueEntries]);
+
+  const startNumericDrag = useCallback<NumericDragHandler>((config, event, linkedConfigs) => {
+    if ((!editableElement && !remoteTarget) || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const input = event.currentTarget;
+    const scrollContainer = input.closest(".dom-ai-property-list") as HTMLElement | null;
+    const bodyStyle = document.body.style;
+    const previousBodyCursor = bodyStyle.cursor;
+    const previousBodyUserSelect = bodyStyle.userSelect;
+    const previousInputCursor = input.style.cursor;
+    const previousScrollOverflow = scrollContainer?.style.overflowY ?? "";
+    const previousScrollOverscroll = scrollContainer?.style.overscrollBehavior ?? "";
+    const startY = event.clientY;
+    const dragConfigs = linkedConfigs?.length ? linkedConfigs : [config];
+    const startValues = dragConfigs.map((item) => {
+      const value = pxNumber(values[item.property]);
+      return Number.isFinite(value) ? value : item.fallback;
+    });
+    let active = false;
+
+    const activate = () => {
+      if (active) return;
+      active = true;
+      if (input.ownerDocument.activeElement === input) input.blur();
+      input.dataset.scrubbing = "true";
+      input.style.cursor = NUMERIC_SCRUB_CURSOR;
+      bodyStyle.cursor = NUMERIC_SCRUB_CURSOR;
+      bodyStyle.userSelect = "none";
+      if (scrollContainer) {
+        scrollContainer.style.overflowY = "hidden";
+        scrollContainer.style.overscrollBehavior = "none";
+      }
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientY - startY;
+      if (!active && Math.abs(delta) < 4) return;
+      activate();
+      if (!active) return;
+      moveEvent.preventDefault();
+      const nextDelta = -delta * config.dragScale;
+      setNumericValueEntries(dragConfigs.map((item, index) => [item, startValues[index] + nextDelta] as const));
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      bodyStyle.cursor = previousBodyCursor;
+      bodyStyle.userSelect = previousBodyUserSelect;
+      input.style.cursor = previousInputCursor;
+      delete input.dataset.scrubbing;
+      try {
+        input.releasePointerCapture?.(event.pointerId);
+      } catch {
+        // Pointer capture can already be released by the browser on cancel.
+      }
+      if (scrollContainer) {
+        scrollContainer.style.overflowY = previousScrollOverflow;
+        scrollContainer.style.overscrollBehavior = previousScrollOverscroll;
+      }
+      if (!active) {
+        input.focus();
+        window.requestAnimationFrame(() => input.select());
+      }
+    };
+
+    input.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+  }, [editableElement, remoteTarget, setNumericValueEntries, values]);
+
+  const disabled = !editableElement && !remoteTarget;
+  const numericConfigs = getNumericAdjusterConfigs(values);
+  const activeScrubKeys = useMemo<ReadonlySet<keyof EditableStyleValues> | null>(() => {
+    if (!activeNumericScrub) return null;
+    return new Set([activeNumericScrub.property, ...activeNumericScrub.peerProperties]);
+  }, [activeNumericScrub]);
+  const showForScrub = useCallback((keys: readonly (keyof EditableStyleValues)[]) => {
+    if (!activeScrubKeys) return true;
+    return keys.some((key) => activeScrubKeys.has(key));
+  }, [activeScrubKeys]);
+  const hasStyleChanges = useMemo(() => {
+    return (Object.keys(values) as Array<keyof EditableStyleValues>).some((property) => (
+      !styleValueMatches(property, values[property], baselineValues[property])
+    ));
+  }, [baselineValues, values]);
+  const styleChanges = useMemo(() => getEditableStyleChanges(values, baselineValues), [baselineValues, values]);
+  const restoreCurrentTargetStyles = useCallback(() => {
+    if (editableElement) {
+      restoreInlineStyleSnapshot(editableElement, inlineBaselineRef.current);
+      if (isTextContentEditable(inspection)) setEditableElementText(editableElement, baselineValues.textContent);
+      return true;
+    }
+    if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_STYLE_RESTORE",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        inlineStyleSnapshot: inlineBaselineRef.current,
+        textContent: baselineValues.textContent
+      });
+      return true;
+    }
+    return false;
+  }, [baselineValues.textContent, editableElement, inspection, remoteTarget, sendRemoteStyleMessage]);
+  const restoreOnDisposeRef = useRef(restoreCurrentTargetStyles);
+  const shouldRevertOnDisposeRef = useRef(shouldRevertOnDispose);
+
+  useEffect(() => {
+    restoreOnDisposeRef.current = restoreCurrentTargetStyles;
+  }, [restoreCurrentTargetStyles]);
+
+  useEffect(() => {
+    shouldRevertOnDisposeRef.current = shouldRevertOnDispose;
+  }, [shouldRevertOnDispose]);
+
+  useEffect(() => {
+    return () => {
+      if (shouldRevertOnDisposeRef.current()) {
+        restoreOnDisposeRef.current();
+      }
+    };
+  }, [resetKey]);
+
+  useImperativeHandle(ref, () => ({
+    revertStyles: () => {
+      if (!restoreCurrentTargetStyles()) return;
+      if (editableElement) {
+        const nextInspection = getElementInspection(editableElement);
+        setValues(createEditableStyleValues(nextInspection));
+      } else if (remoteTarget) {
+        setValues(baselineValues);
+      }
+      window.requestAnimationFrame(onChanged);
+    }
+  }), [baselineValues, editableElement, onChanged, remoteTarget, restoreCurrentTargetStyles]);
+
+  useEffect(() => {
+    onDirtyChange(hasStyleChanges);
+  }, [hasStyleChanges, onDirtyChange]);
+
+  useEffect(() => {
+    onStyleChangesChange(styleChanges);
+  }, [onStyleChangesChange, styleChanges]);
+
+  useEffect(() => {
+    onScrubActiveChange(Boolean(activeNumericScrub));
+  }, [activeNumericScrub, onScrubActiveChange]);
+
+  const resetIfEdited = useCallback((property: keyof EditableStyleValues, cssProperty: string) => {
+    if (property === "textContent") {
+      return styleValueMatches(property, values[property], baselineValues[property])
+        ? undefined
+        : resetTextContentValue;
+    }
+    return styleValueMatches(property, values[property], baselineValues[property])
+      ? undefined
+      : () => resetStyleValue(property, cssProperty);
+  }, [baselineValues, resetStyleValue, resetTextContentValue, values]);
 
   return (
-    <div className="mt-2 space-y-1.5">
-      <div className="flex items-center gap-1.5 px-0.5 text-[11px] font-extrabold text-ink-800">
-        <Palette size={13} />
-        <span>元素样式</span>
+    <section className="dom-ai-style-panel">
+      <div className={`dom-ai-property-list ${activeScrubKeys ? "dom-ai-property-list-scrubbing" : ""}`}>
+        {!activeScrubKeys && textContentControlVisible ? (
+          <TextInputStyleRow
+            label="文本"
+            value={values.textContent}
+            disabled={disabled}
+            onChange={setTextContentValue}
+            onReset={resetIfEdited("textContent", "text")}
+          />
+        ) : null}
+        {!activeScrubKeys ? (
+          <>
+            <ColorStyleRow
+              label="文本颜色"
+              value={values.color}
+              disabled={disabled}
+              onChange={(value) => setStyleValue("color", "color", value)}
+              onReset={resetIfEdited("color", "color")}
+            />
+            <ColorStyleRow
+              label="背景"
+              value={values.backgroundColor}
+              disabled={disabled}
+              onChange={(value) => setStyleValue("backgroundColor", "background-color", value)}
+              onReset={resetIfEdited("backgroundColor", "background-color")}
+            />
+          </>
+        ) : null}
+        {showForScrub(["opacity"]) ? (
+          <NumericStyleRow
+            config={numericConfigs.opacity}
+            value={values.opacity}
+            disabled={disabled}
+            onChange={(value) => setNumericValues(numericConfigs.opacity, value)}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited("opacity", "opacity")}
+          />
+        ) : null}
+
+        {textControlsVisible ? (
+          <>
+            {!activeScrubKeys ? (
+              <FontFamilyStyleRow
+                label="字体"
+                value={values.fontFamily}
+                computedValue={inspection.fontFamily}
+                pageFontFamilies={fontFamilies}
+                optionKey={resetKey}
+                disabled={disabled}
+                onChange={(value) => setStyleValue("fontFamily", "font-family", value)}
+                onReset={resetIfEdited("fontFamily", "font-family")}
+              />
+            ) : null}
+            {showForScrub(["fontSize"]) ? (
+              <NumericStyleRow
+                config={numericConfigs.fontSize}
+                value={values.fontSize}
+                disabled={disabled}
+                onChange={(value) => setNumericValues(numericConfigs.fontSize, value)}
+                onDragStart={startNumericDrag}
+                onReset={resetIfEdited("fontSize", "font-size")}
+              />
+            ) : null}
+            {!activeScrubKeys ? (
+              <TextSelectStyleRow
+                label="字重"
+                value={values.fontWeight}
+                options={FONT_WEIGHT_OPTIONS}
+                disabled={disabled}
+                onChange={(value) => setStyleValue("fontWeight", "font-weight", value)}
+                onReset={resetIfEdited("fontWeight", "font-weight")}
+              />
+            ) : null}
+            {showForScrub(["lineHeight"]) ? (
+              <NumericStyleRow
+                config={numericConfigs.lineHeight}
+                value={values.lineHeight}
+                disabled={disabled}
+                onChange={(value) => setNumericValues(numericConfigs.lineHeight, value)}
+                onDragStart={startNumericDrag}
+                onReset={resetIfEdited("lineHeight", "line-height")}
+              />
+            ) : null}
+            {!activeScrubKeys ? (
+              <AlignStyleRow
+                value={values.textAlign}
+                disabled={disabled}
+                onChange={(value) => setStyleValue("textAlign", "text-align", value)}
+                onReset={resetIfEdited("textAlign", "text-align")}
+              />
+            ) : null}
+          </>
+        ) : null}
+
+        {!activeScrubKeys && (textContentControlVisible || textControlsVisible) ? <StyleSectionDivider /> : null}
+
+        {layoutControlsVisible ? (
+          <>
+            {!activeScrubKeys && directionalLayoutVisible ? (
+              <>
+                <TextSelectStyleRow
+                  label="布局方向"
+                  value={isGridLayout ? values.gridAutoFlow : values.flexDirection}
+                  options={isGridLayout ? GRID_AUTO_FLOW_OPTIONS : FLEX_DIRECTION_OPTIONS}
+                  disabled={disabled}
+                  onChange={(value) => setStyleValue(
+                    isGridLayout ? "gridAutoFlow" : "flexDirection",
+                    isGridLayout ? "grid-auto-flow" : "flex-direction",
+                    value
+                  )}
+                  onReset={resetIfEdited(
+                    isGridLayout ? "gridAutoFlow" : "flexDirection",
+                    isGridLayout ? "grid-auto-flow" : "flex-direction"
+                  )}
+                />
+                <TextSelectStyleRow
+                  label="分布"
+                  value={values.justifyContent}
+                  options={JUSTIFY_CONTENT_OPTIONS}
+                  disabled={disabled}
+                  onChange={(value) => setStyleValue("justifyContent", "justify-content", value)}
+                  onReset={resetIfEdited("justifyContent", "justify-content")}
+                />
+                <TextSelectStyleRow
+                  label="对齐"
+                  value={values.alignItems}
+                  options={ALIGN_ITEMS_OPTIONS}
+                  disabled={disabled}
+                  onChange={(value) => setStyleValue("alignItems", "align-items", value)}
+                  onReset={resetIfEdited("alignItems", "align-items")}
+                />
+              </>
+            ) : null}
+            {showForScrub(["columnGap", "rowGap"]) ? (
+              <GapSpacingGroup
+                values={values}
+                configs={numericConfigs}
+                disabled={disabled}
+                activeScrubKeys={activeScrubKeys}
+                onChange={setNumericValues}
+                onDragStart={startNumericDrag}
+                onReset={resetIfEdited}
+              />
+            ) : null}
+          </>
+        ) : null}
+
+        {!activeScrubKeys && layoutControlsVisible ? <StyleSectionDivider /> : null}
+
+        {showForScrub(["borderRadius"]) ? (
+          <NumericStyleRow
+            config={numericConfigs.borderRadius}
+            value={values.borderRadius}
+            disabled={disabled}
+            onChange={(value) => setNumericValues(numericConfigs.borderRadius, value)}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited("borderRadius", "border-radius")}
+          />
+        ) : null}
+        {!activeScrubKeys ? (
+          <ColorStyleRow
+            label="边框颜色"
+            value={values.borderColor}
+            disabled={disabled}
+            onChange={(value) => setStyleValue("borderColor", "border-color", value)}
+            onReset={resetIfEdited("borderColor", "border-color")}
+          />
+        ) : null}
+        {showForScrub(["borderWidth"]) ? (
+          <NumericStyleRow
+            config={numericConfigs.borderWidth}
+            value={values.borderWidth}
+            disabled={disabled}
+            onChange={(value) => setNumericValues(numericConfigs.borderWidth, value)}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited("borderWidth", "border-width")}
+          />
+        ) : null}
+        {!activeScrubKeys ? <StyleSectionDivider /> : null}
+        {showForScrub(["width", "height"]) ? (
+          <SizeRows
+            values={values}
+            configs={numericConfigs}
+            disabled={disabled}
+            linked={linkedBoxValues.size}
+            activeScrubKeys={activeScrubKeys}
+            onLinkedChange={(linked) => setLinkedBoxValues((current) => ({ ...current, size: linked }))}
+            onChange={setNumericValues}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited}
+          />
+        ) : null}
+
+        {!activeScrubKeys ? <StyleSectionDivider /> : null}
+
+        {showForScrub(["marginTop", "marginRight", "marginBottom", "marginLeft"]) ? (
+          <BoxSpacingGroup
+            prefix="margin"
+            values={values}
+            configs={numericConfigs}
+            disabled={disabled}
+            linkedBlock={linkedBoxValues.marginBlock}
+            linkedInline={linkedBoxValues.marginInline}
+            activeScrubKeys={activeScrubKeys}
+            onLinkedBlockChange={(linked) => setLinkedBoxValues((current) => ({ ...current, marginBlock: linked }))}
+            onLinkedInlineChange={(linked) => setLinkedBoxValues((current) => ({ ...current, marginInline: linked }))}
+            onChange={setNumericValues}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited}
+          />
+        ) : null}
+
+        {!activeScrubKeys ? <StyleSectionDivider /> : null}
+
+        {showForScrub(["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"]) ? (
+          <BoxSpacingGroup
+            prefix="padding"
+            values={values}
+            configs={numericConfigs}
+            disabled={disabled}
+            linkedBlock={linkedBoxValues.paddingBlock}
+            linkedInline={linkedBoxValues.paddingInline}
+            activeScrubKeys={activeScrubKeys}
+            onLinkedBlockChange={(linked) => setLinkedBoxValues((current) => ({ ...current, paddingBlock: linked }))}
+            onLinkedInlineChange={(linked) => setLinkedBoxValues((current) => ({ ...current, paddingInline: linked }))}
+            onChange={setNumericValues}
+            onDragStart={startNumericDrag}
+            onReset={resetIfEdited}
+          />
+        ) : null}
       </div>
+    </section>
+  );
+});
 
-      <details className="dom-ai-style-details group rounded-lg bg-ink-50/80">
-        <summary className="flex h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-bold text-ink-400 transition-colors duration-150 hover:text-ink-700">
-          <span className="inline-flex w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-            <ChevronDown size={12} className="shrink-0 transition-transform duration-150 group-open:rotate-180" />
-            <Palette size={12} className="shrink-0" />
-            <span className="shrink-0 text-ink-600">设计验收</span>
-            <span className="shrink-0">关键属性</span>
-            <span className="min-w-0 flex-1 truncate font-mono">{reviewSummary}</span>
-          </span>
-        </summary>
+function StyleSectionDivider() {
+  return <div className="dom-ai-style-section-divider" aria-hidden="true" />;
+}
 
-        <div className="space-y-1.5 p-1 pt-0">
-          <div className="grid grid-cols-3 rounded-lg bg-white shadow-[inset_0_0_0_1px_rgba(17,24,39,0.07)]">
-            <LightMetric icon={<Ruler size={13} />} label="尺寸" value={size} copied={copiedKey === "尺寸"} onCopy={copyMetric} />
-            <LightMetric icon={<Type size={13} />} label="字号 / 行高" value={`${compactUnitValue(inspection.fontSize)} / ${compactUnitValue(inspection.lineHeight)}`} copied={copiedKey === "字号 / 行高"} onCopy={copyMetric} />
-            <LightMetric label="字重" value={inspection.fontWeight} copied={copiedKey === "字重"} onCopy={copyMetric} />
-            <LightMetric label="圆角" value={inspection.borderRadius} copied={copiedKey === "圆角"} onCopy={copyMetric} />
-            <LightMetric label="内边距" value={inspection.padding} copied={copiedKey === "内边距"} onCopy={copyMetric} />
-            <LightMetric label="透明度" value={inspection.opacity} copied={copiedKey === "透明度"} onCopy={copyMetric} />
-            <LightMetric className="col-span-3" label="字体" value={fontFamily} copied={copiedKey === "字体"} onCopy={copyMetric} />
-          </div>
-
-          <div className="grid grid-cols-3 gap-1 rounded-lg bg-ink-100 p-0.5">
-            {(["rgb", "hex", "hsl"] as ColorMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={`h-6 rounded-md text-[10px] font-extrabold uppercase transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96] ${
-                  colorMode === mode
-                    ? "bg-white text-ink-900 shadow-[0_1px_2px_rgba(17,24,39,0.12)]"
-                    : "text-ink-500 hover:bg-white/60 hover:text-ink-800"
-                }`}
-                type="button"
-                onClick={() => onColorModeChange(mode)}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-1.5">
-            <LightColorMetric label="文字 · Text" value={inspection.color} mode={colorMode} copied={copiedKey === "文字 · Text"} onCopy={copyMetric} />
-            <LightColorMetric label="背景 · BG" value={inspection.backgroundColor} mode={colorMode} copied={copiedKey === "背景 · BG"} onCopy={copyMetric} />
-          </div>
-        </div>
-      </details>
-
-      <details className="dom-ai-style-details group rounded-lg bg-ink-50/80">
-        <summary className="flex h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-bold text-ink-400 transition-colors duration-150 hover:text-ink-700">
-          <span className="inline-flex w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-            <ChevronDown size={12} className="shrink-0 transition-transform duration-150 group-open:rotate-180" />
-            <Code2 size={12} className="shrink-0" />
-            <span className="shrink-0 text-ink-600">开发属性</span>
-            <span className="min-w-0 flex-1 truncate font-mono">{advancedSummary || "display: - · position: - · z-index: - · gap: -"}</span>
-          </span>
-        </summary>
-        <div className="grid grid-cols-3 gap-1 p-1 pt-0">
-          <LightMetric label="Display" value={inspection.display} copied={copiedKey === "Display"} onCopy={copyMetric} />
-          <LightMetric label="Position" value={inspection.position} copied={copiedKey === "Position"} onCopy={copyMetric} />
-          <LightMetric label="Z-index" value={inspection.zIndex} copied={copiedKey === "Z-index"} onCopy={copyMetric} />
-          <LightMetric label="Gap" value={inspection.gap} copied={copiedKey === "Gap"} onCopy={copyMetric} />
-        </div>
-      </details>
+function StyleRow({
+  label,
+  children,
+  onReset
+}: {
+  label: string;
+  children: React.ReactNode;
+  onReset?: () => void;
+}) {
+  return (
+    <div className="dom-ai-style-row">
+      <span className="dom-ai-style-row-label">{label}</span>
+      <div className="dom-ai-style-row-control">
+        {onReset ? (
+          <button type="button" className="dom-ai-row-reset" aria-label={`重置${label}`} title={`重置${label}`} onClick={onReset}>
+            <RotateCcw size={13} />
+          </button>
+        ) : null}
+        {children}
+      </div>
     </div>
   );
 }
 
-function LightMetric({
-  icon,
+function ColorStyleRow({
   label,
   value,
-  className = "",
-  copied,
-  onCopy
+  disabled,
+  onChange,
+  onReset
 }: {
-  icon?: React.ReactNode;
   label: string;
   value: string;
-  className?: string;
-  copied: boolean;
-  onCopy: (label: string, value: string) => void;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset?: () => void;
 }) {
+  const nativeInputRef = useRef<HTMLInputElement | null>(null);
+  const pickerValue = cssColorToNativeInput(value);
+  const displayValue = formatColor(value, "rgb");
+  const openNativeColorPicker = useCallback(() => {
+    const input = nativeInputRef.current;
+    if (!input) return;
+    const colorInput = input as HTMLInputElement & { showPicker?: () => void };
+    try {
+      if (colorInput.showPicker) {
+        colorInput.showPicker();
+        return;
+      }
+    } catch {
+      // Fall back to click when showPicker is unavailable or blocked.
+    }
+    input.click();
+  }, []);
+
   return (
-    <button
-      className={`min-w-0 bg-white/35 px-2 py-1.5 text-left shadow-[inset_-1px_-1px_0_rgba(17,24,39,0.07)] transition-[background-color,box-shadow,transform] duration-150 hover:bg-white hover:shadow-[inset_0_0_0_1px_rgba(15,159,120,0.26)] active:scale-[0.96] ${className}`}
-      type="button"
-      title={`复制 ${label}`}
-      onClick={() => onCopy(label, value)}
-    >
-      <div className="flex items-center gap-1 text-[10px] font-bold uppercase text-ink-400">
-        {icon}
-        <span>{copied ? "已复制" : label}</span>
+    <StyleRow label={label} onReset={onReset}>
+      <div className="dom-ai-color-popover-anchor">
+        <button
+          type="button"
+          className="dom-ai-color-row-control"
+          disabled={disabled}
+          onClick={openNativeColorPicker}
+        >
+          <span className="dom-ai-color-swatch" style={{ background: swatchBackground(value) }} />
+          <span>{displayValue}</span>
+        </button>
+        <input
+          ref={nativeInputRef}
+          className="dom-ai-native-color-input"
+          type="color"
+          disabled={disabled}
+          tabIndex={-1}
+          value={pickerValue}
+          onInput={(event) => onChange(event.currentTarget.value)}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        />
       </div>
-      <div className="mt-0.5 truncate font-mono text-[11px] font-bold tabular-nums text-ink-800">{value || "-"}</div>
-    </button>
+    </StyleRow>
   );
 }
 
-function LightColorMetric({
+function TextInputStyleRow({
   label,
   value,
-  mode,
-  copied,
-  onCopy
+  disabled,
+  onChange,
+  onReset
 }: {
   label: string;
   value: string;
-  mode: ColorMode;
-  copied: boolean;
-  onCopy: (label: string, value: string) => void;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset?: () => void;
 }) {
-  const displayValue = formatColor(value, mode);
+  return (
+    <StyleRow label={label} onReset={onReset}>
+      <input
+        className="dom-ai-text-style-input"
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        spellCheck={false}
+      />
+    </StyleRow>
+  );
+}
+
+function FontFamilyStyleRow({
+  label,
+  value,
+  computedValue,
+  pageFontFamilies,
+  optionKey,
+  disabled,
+  onChange,
+  onReset
+}: {
+  label: string;
+  value: string;
+  computedValue: string;
+  pageFontFamilies?: string[];
+  optionKey: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset?: () => void;
+}) {
+  const initialOptionsRef = useRef<SelectStyleOption[] | null>(null);
+  const initialOptionsKeyRef = useRef<string | null>(null);
+  if (!initialOptionsRef.current || initialOptionsKeyRef.current !== optionKey) {
+    initialOptionsRef.current = getInitialFontFamilyOptions(value, computedValue, pageFontFamilies);
+    initialOptionsKeyRef.current = optionKey;
+  }
+  const options = useMemo(() => mergeFontFamilyOptions(initialOptionsRef.current ?? [], value), [value]);
+  const optionValues = useMemo(() => options.map((option) => option.value), [options]);
+  const activeValue = normalizeFontFamilyName(value);
+  const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; width: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const portalRoot = containerRef.current?.closest(".dom-ai-root") ?? null;
+
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const menuHeight = Math.min(220, options.length * 28 + 8 + (!optionValues.includes(value) && value ? 28 : 0));
+    const belowTop = rect.bottom + 5;
+    const aboveTop = rect.top - menuHeight - 5;
+    const shouldOpenAbove = belowTop + menuHeight > window.innerHeight - 8 && aboveTop >= 8;
+    const top = shouldOpenAbove
+      ? aboveTop
+      : Math.min(belowTop, Math.max(8, window.innerHeight - menuHeight - 8));
+    const width = Math.max(188, rect.width);
+    const left = Math.min(
+      Math.max(8, rect.right - width),
+      Math.max(8, window.innerWidth - width - 8)
+    );
+    setMenuPosition({ left, top, width });
+  }, [optionValues, options.length, value]);
+
+  useEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+    const closeFromDocument = (event: PointerEvent) => {
+      const root = containerRef.current;
+      const menuRoot = menuRef.current;
+      const path = event.composedPath();
+      if (!root) return;
+      if (path.includes(root) || (menuRoot && path.includes(menuRoot))) return;
+      setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeFromDocument, true);
+    document.addEventListener("keydown", closeFromKeyboard, true);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromDocument, true);
+      document.removeEventListener("keydown", closeFromKeyboard, true);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [open, updateMenuPosition]);
+
+  const selectOption = useCallback((option: string) => {
+    onChange(option);
+    setOpen(false);
+  }, [onChange]);
+
+  const menu = open && menuPosition ? (
+    <div
+      ref={menuRef}
+      className="dom-ai-select-menu dom-ai-select-menu-floating dom-ai-font-menu"
+      role="listbox"
+      style={{ left: menuPosition.left, top: menuPosition.top, width: menuPosition.width }}
+    >
+      {!optionValues.includes(value) && value ? (
+        <button
+          type="button"
+          className="dom-ai-select-option dom-ai-select-option-active"
+          role="option"
+          aria-selected="true"
+          title={value}
+          onClick={() => selectOption(value)}
+        >
+          <span>{value}</span>
+          <Check size={13} />
+        </button>
+      ) : null}
+      {options.map((option) => {
+        const selected = normalizeFontFamilyName(option.value) === activeValue;
+        return (
+          <button
+            key={`${option.label}-${option.value}`}
+            type="button"
+            className={`dom-ai-select-option ${selected ? "dom-ai-select-option-active" : ""}`}
+            role="option"
+            aria-selected={selected}
+            title={option.value}
+            onClick={() => selectOption(option.value)}
+          >
+            <span>{option.label}</span>
+            {selected ? <Check size={13} /> : null}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
 
   return (
-    <button
-      className="rounded-lg bg-ink-50 px-2 py-1.5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-white hover:shadow-[inset_0_0_0_1px_rgba(15,159,120,0.26)] active:scale-[0.96]"
-      type="button"
-      title={`复制 ${label}`}
-      onClick={() => onCopy(label, displayValue)}
-    >
-      <div className="text-[10px] font-bold uppercase text-ink-400">{copied ? "已复制" : label}</div>
-      <div className="mt-0.5 flex items-center gap-1.5">
-        <span className="h-3.5 w-3.5 shrink-0 rounded-full shadow-[0_0_0_1px_rgba(17,24,39,0.16)]" style={{ backgroundColor: value }} />
-        <span className="truncate font-mono text-[11px] font-bold text-ink-800">{displayValue}</span>
+    <StyleRow label={label} onReset={onReset}>
+      <div className="dom-ai-font-combobox" ref={containerRef}>
+        <input
+          className="dom-ai-font-input"
+          disabled={disabled}
+          value={value}
+          title={value}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          spellCheck={false}
+        />
+        <button
+          ref={triggerRef}
+          type="button"
+          className={`dom-ai-font-trigger ${open ? "dom-ai-font-trigger-open" : ""}`}
+          disabled={disabled}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <ChevronDown size={15} />
+        </button>
+        {portalRoot && menu ? createPortal(menu, portalRoot) : menu}
       </div>
-    </button>
+    </StyleRow>
   );
+}
+
+function TextSelectStyleRow({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+  onReset
+}: {
+  label: string;
+  value: string;
+  options: Array<string | SelectStyleOption>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset?: () => void;
+}) {
+  const normalizedOptions = useMemo<SelectStyleOption[]>(
+    () => options.map((option) => typeof option === "string" ? { value: option, label: option } : option),
+    [options]
+  );
+  const optionValues = useMemo(() => normalizedOptions.map((option) => option.value), [normalizedOptions]);
+  const activeOption = normalizedOptions.find((option) => option.value === value);
+  const fallbackValue = value || (normalizedOptions[0]?.value ?? "");
+  const fallbackLabel = value || (normalizedOptions[0]?.label ?? "");
+  const normalizedValue = activeOption?.value ?? fallbackValue;
+  const normalizedLabel = activeOption?.label ?? fallbackLabel;
+  const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; width: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const portalRoot = containerRef.current?.closest(".dom-ai-root") ?? null;
+
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const menuHeight = Math.min(220, normalizedOptions.length * 28 + 8 + (!optionValues.includes(value) && value ? 28 : 0));
+    const belowTop = rect.bottom + 5;
+    const aboveTop = rect.top - menuHeight - 5;
+    const shouldOpenAbove = belowTop + menuHeight > window.innerHeight - 8 && aboveTop >= 8;
+    const top = shouldOpenAbove
+      ? aboveTop
+      : Math.min(belowTop, Math.max(8, window.innerHeight - menuHeight - 8));
+    const width = Math.max(128, rect.width);
+    const left = Math.min(
+      Math.max(8, rect.right - width),
+      Math.max(8, window.innerWidth - width - 8)
+    );
+    setMenuPosition({ left, top, width });
+  }, [normalizedOptions.length, optionValues, value]);
+
+  useEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+    const closeFromDocument = (event: PointerEvent) => {
+      const root = containerRef.current;
+      const menuRoot = menuRef.current;
+      const path = event.composedPath();
+      if (!root) return;
+      if (path.includes(root) || (menuRoot && path.includes(menuRoot))) return;
+      setOpen(false);
+    };
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeFromDocument, true);
+    document.addEventListener("keydown", closeFromKeyboard, true);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromDocument, true);
+      document.removeEventListener("keydown", closeFromKeyboard, true);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [open, updateMenuPosition]);
+
+  const selectOption = useCallback((option: string) => {
+    onChange(option);
+    setOpen(false);
+  }, [onChange]);
+
+  const menu = open && menuPosition ? (
+    <div
+      ref={menuRef}
+      className="dom-ai-select-menu dom-ai-select-menu-floating"
+      role="listbox"
+      style={{ left: menuPosition.left, top: menuPosition.top, width: menuPosition.width }}
+    >
+      {!optionValues.includes(value) && value ? (
+        <button
+          type="button"
+          className="dom-ai-select-option dom-ai-select-option-active"
+          role="option"
+          aria-selected="true"
+          onClick={() => selectOption(value)}
+        >
+          <span>{value}</span>
+          <Check size={13} />
+        </button>
+      ) : null}
+      {normalizedOptions.map((option) => {
+        const selected = option.value === normalizedValue;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            className={`dom-ai-select-option ${selected ? "dom-ai-select-option-active" : ""}`}
+            role="option"
+            aria-selected={selected}
+            onClick={() => selectOption(option.value)}
+          >
+            <span>{option.label}</span>
+            {selected ? <Check size={13} /> : null}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  return (
+    <StyleRow label={label} onReset={onReset}>
+      <div className="dom-ai-select-control" ref={containerRef}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className={`dom-ai-select-trigger ${open ? "dom-ai-select-trigger-open" : ""}`}
+          disabled={disabled}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span>{normalizedLabel}</span>
+          <ChevronDown size={15} />
+        </button>
+        {portalRoot && menu ? createPortal(menu, portalRoot) : menu}
+      </div>
+    </StyleRow>
+  );
+}
+
+function NumericStyleRow({
+  config,
+  value,
+  disabled,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  config: NumericAdjusterConfig;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onDragStart: NumericDragHandler;
+  onReset?: () => void;
+}) {
+  return (
+    <StyleRow label={config.label} onReset={onReset}>
+      <NumericInputControl
+        config={config}
+        value={value}
+        disabled={disabled}
+        onChange={onChange}
+        onDragStart={onDragStart}
+      />
+    </StyleRow>
+  );
+}
+
+function NumericInputControl({
+  config,
+  value,
+  disabled,
+  compact = false,
+  linkedConfigs,
+  onChange,
+  onDragStart
+}: {
+  config: NumericAdjusterConfig;
+  value: string;
+  disabled: boolean;
+  compact?: boolean;
+  linkedConfigs?: NumericAdjusterConfig[];
+  onChange: (value: string) => void;
+  onDragStart: NumericDragHandler;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const skipBlurCommitRef = useRef(false);
+  const [editing, setEditing] = useState(false);
+  const numericValue = pxNumber(value);
+  const displayValue = Number.isFinite(numericValue) ? `${roundToPrecision(numericValue, config.precision)}` : "";
+  const [draftValue, setDraftValue] = useState(displayValue);
+  const renderedValue = editing ? draftValue : displayValue;
+
+  useEffect(() => {
+    if (!editing) setDraftValue(displayValue);
+  }, [displayValue, editing]);
+
+  const commitDraftValue = useCallback((nextValue: string) => {
+    onChange(nextValue.trim());
+  }, [onChange]);
+
+  const handleFocus = useCallback(() => {
+    skipBlurCommitRef.current = false;
+    setEditing(true);
+    setDraftValue(displayValue);
+    window.requestAnimationFrame(() => inputRef.current?.select());
+  }, [displayValue]);
+
+  const handleBlur = useCallback(() => {
+    setEditing(false);
+    if (skipBlurCommitRef.current) {
+      skipBlurCommitRef.current = false;
+      setDraftValue(displayValue);
+      return;
+    }
+    commitDraftValue(draftValue);
+  }, [commitDraftValue, displayValue, draftValue]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      skipBlurCommitRef.current = true;
+      setDraftValue(displayValue);
+      setEditing(false);
+      event.currentTarget.blur();
+    }
+  }, [displayValue]);
+
+  return (
+    <div className={`dom-ai-number-control ${compact ? "dom-ai-number-control-compact" : ""}`}>
+      <input
+        ref={inputRef}
+        type="number"
+        disabled={disabled}
+        value={renderedValue}
+        min={config.min}
+        max={config.max}
+        step={config.step}
+        title="点击输入数值，按住上下拖动调整"
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        onChange={(event) => setDraftValue(event.currentTarget.value)}
+        onPointerDown={(event) => onDragStart(config, event, linkedConfigs)}
+        onWheel={(event) => {
+          if (event.currentTarget.ownerDocument.activeElement === event.currentTarget) {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+      <span className="dom-ai-number-unit">{config.unit}</span>
+    </div>
+  );
+}
+
+function InlineNumericControl({
+  config,
+  value,
+  disabled,
+  compact = false,
+  linkedConfigs,
+  onChange,
+  onDragStart
+}: {
+  config: NumericAdjusterConfig;
+  value: string;
+  disabled: boolean;
+  compact?: boolean;
+  linkedConfigs?: NumericAdjusterConfig[];
+  onChange: (value: string) => void;
+  onDragStart: NumericDragHandler;
+}) {
+  return (
+    <NumericInputControl
+      config={config}
+      value={value}
+      disabled={disabled}
+      compact={compact}
+      linkedConfigs={linkedConfigs}
+      onChange={onChange}
+      onDragStart={onDragStart}
+    />
+  );
+}
+
+function AlignStyleRow({
+  value,
+  disabled,
+  onChange,
+  onReset
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset?: () => void;
+}) {
+  const options = [
+    { value: "left", label: "左对齐", icon: <AlignLeft size={15} /> },
+    { value: "center", label: "居中", icon: <AlignCenter size={15} /> },
+    { value: "right", label: "右对齐", icon: <AlignRight size={15} /> },
+    { value: "justify", label: "两端", icon: <AlignJustify size={15} /> }
+  ];
+  return (
+    <StyleRow label="对齐" onReset={onReset}>
+      <div className="dom-ai-align-control">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={value === option.value ? "dom-ai-align-active" : ""}
+            disabled={disabled}
+            title={option.label}
+            onClick={() => onChange(option.value)}
+          >
+            {option.icon}
+          </button>
+        ))}
+      </div>
+    </StyleRow>
+  );
+}
+
+function GapSpacingGroup({
+  values,
+  configs,
+  disabled,
+  activeScrubKeys,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  activeScrubKeys: ReadonlySet<keyof EditableStyleValues> | null;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+  onReset: (property: keyof EditableStyleValues, cssProperty: string) => (() => void) | undefined;
+}) {
+  const rows = [
+    { label: "水平", key: "columnGap" as const, css: "column-gap" },
+    { label: "垂直", key: "rowGap" as const, css: "row-gap" }
+  ];
+  const visibleRows = activeScrubKeys ? rows.filter((row) => activeScrubKeys.has(row.key)) : rows;
+  const revealGroup = useCallback((event: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const group = event.currentTarget;
+    if (!group.open) return;
+    window.requestAnimationFrame(() => {
+      group.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }, []);
+
+  if (activeScrubKeys) {
+    return (
+      <div className="dom-ai-property-group dom-ai-property-group-scrubbing">
+        <GapSpacingRows
+          rows={visibleRows}
+          values={values}
+          configs={configs}
+          disabled={disabled}
+          onChange={onChange}
+          onDragStart={onDragStart}
+          onReset={onReset}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <details className="dom-ai-property-group dom-ai-gap-property-group" onToggle={revealGroup}>
+      <summary>
+        <span className="dom-ai-property-summary-label">
+          <ChevronDown className="dom-ai-summary-chevron" size={13} />
+          <span>间距</span>
+        </span>
+        <span className="dom-ai-box-preview dom-ai-gap-preview" aria-label="间距预览">
+          {rows.map((row) => (
+            <BoxSpacingPreviewInput
+              key={row.key}
+              config={configs[row.key]}
+              value={values[row.key]}
+              disabled={disabled}
+              onChange={(value) => onChange(configs[row.key], value)}
+              onDragStart={onDragStart}
+            />
+          ))}
+        </span>
+      </summary>
+      <GapSpacingRows
+        rows={rows}
+        values={values}
+        configs={configs}
+        disabled={disabled}
+        onChange={onChange}
+        onDragStart={onDragStart}
+        onReset={onReset}
+      />
+    </details>
+  );
+}
+
+function GapSpacingRows({
+  rows,
+  values,
+  configs,
+  disabled,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  rows: Array<{ label: string; key: "columnGap" | "rowGap"; css: string }>;
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+  onReset: (property: keyof EditableStyleValues, cssProperty: string) => (() => void) | undefined;
+}) {
+  return (
+    <div className="dom-ai-nested-property-list dom-ai-gap-rows">
+      {rows.map((row) => {
+        const reset = onReset(row.key, row.css);
+        return (
+          <div className="dom-ai-linked-dimension-row" key={row.key}>
+            <span className="dom-ai-style-row-label">{row.label}</span>
+            <div className="dom-ai-style-row-control">
+              {reset ? (
+                <button type="button" className="dom-ai-row-reset" aria-label={`重置${row.label}间距`} title={`重置${row.label}间距`} onClick={reset}>
+                  <RotateCcw size={12} />
+                </button>
+              ) : null}
+              <InlineNumericControl
+                config={configs[row.key]}
+                value={values[row.key]}
+                disabled={disabled}
+                compact
+                onChange={(value) => onChange(configs[row.key], value)}
+                onDragStart={onDragStart}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SizeRows({
+  values,
+  configs,
+  disabled,
+  linked,
+  activeScrubKeys,
+  onLinkedChange,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  linked: boolean;
+  activeScrubKeys: ReadonlySet<keyof EditableStyleValues> | null;
+  onLinkedChange: (linked: boolean) => void;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+  onReset: (property: keyof EditableStyleValues, cssProperty: string) => (() => void) | undefined;
+}) {
+  const rows = [
+    { label: "宽度", key: "width" as const, css: "width" },
+    { label: "高度", key: "height" as const, css: "height" }
+  ];
+  const visibleRows = activeScrubKeys ? rows.filter((row) => activeScrubKeys.has(row.key)) : rows;
+  const showSizeLink = !activeScrubKeys || (visibleRows.some((row) => row.key === "width") && visibleRows.some((row) => row.key === "height"));
+
+  return (
+    <div className="dom-ai-linked-dimension-group">
+      {visibleRows.map((row) => {
+        const reset = onReset(row.key, row.css);
+        const linkedConfigs = linked ? [configs.width, configs.height] : undefined;
+        return (
+          <div className="dom-ai-linked-dimension-row" key={row.key}>
+            <span className={`dom-ai-style-row-label ${row.key === "width" && showSizeLink ? "dom-ai-linked-dimension-label" : ""}`}>
+              {row.key === "width" && showSizeLink ? (
+                <span className="dom-ai-linked-dimension-lines">
+                  <ConnectorBracket />
+                  <button
+                    type="button"
+                    className={`dom-ai-link-toggle ${linked ? "dom-ai-link-toggle-active" : ""}`}
+                    aria-pressed={linked}
+                    aria-label={linked ? "取消联动宽高" : "联动宽高"}
+                    title={linked ? "取消联动宽高" : "联动宽高"}
+                    onClick={() => onLinkedChange(!linked)}
+                  >
+                    <Link2 size={10} />
+                  </button>
+                </span>
+              ) : null}
+              <span>{row.label}</span>
+            </span>
+            <div className="dom-ai-style-row-control">
+              {reset ? (
+                <button type="button" className="dom-ai-row-reset" aria-label={`重置${row.label}`} title={`重置${row.label}`} onClick={reset}>
+                  <RotateCcw size={12} />
+                </button>
+              ) : null}
+              <InlineNumericControl
+                config={configs[row.key]}
+                value={values[row.key]}
+                disabled={disabled}
+                compact
+                linkedConfigs={linkedConfigs}
+                onChange={(value) => onChange(configs[row.key], value, linkedConfigs)}
+                onDragStart={onDragStart}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BoxSpacingGroup({
+  prefix,
+  values,
+  configs,
+  disabled,
+  linkedBlock,
+  linkedInline,
+  activeScrubKeys,
+  onLinkedBlockChange,
+  onLinkedInlineChange,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  prefix: "margin" | "padding";
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  linkedBlock: boolean;
+  linkedInline: boolean;
+  activeScrubKeys: ReadonlySet<keyof EditableStyleValues> | null;
+  onLinkedBlockChange: (linked: boolean) => void;
+  onLinkedInlineChange: (linked: boolean) => void;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+  onReset: (property: keyof EditableStyleValues, cssProperty: string) => (() => void) | undefined;
+}) {
+  const label = prefix === "margin" ? "外边距" : "内边距";
+  const revealGroup = useCallback((event: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const group = event.currentTarget;
+    if (!group.open) return;
+    window.requestAnimationFrame(() => {
+      group.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }, []);
+
+  if (activeScrubKeys) {
+    return (
+      <div className="dom-ai-property-group dom-ai-property-group-scrubbing">
+        <BoxSpacingRows
+          prefix={prefix}
+          values={values}
+          configs={configs}
+          disabled={disabled}
+          linkedBlock={linkedBlock}
+          linkedInline={linkedInline}
+          activeScrubKeys={activeScrubKeys}
+          onLinkedBlockChange={onLinkedBlockChange}
+          onLinkedInlineChange={onLinkedInlineChange}
+          onChange={onChange}
+          onDragStart={onDragStart}
+          onReset={onReset}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <details className="dom-ai-property-group" onToggle={revealGroup}>
+      <summary>
+        <span className="dom-ai-property-summary-label">
+          <ChevronDown className="dom-ai-summary-chevron" size={13} />
+          <span>{label}</span>
+        </span>
+        <BoxSpacingPreview
+          prefix={prefix}
+          values={values}
+          configs={configs}
+          disabled={disabled}
+          linkedBlock={linkedBlock}
+          linkedInline={linkedInline}
+          onChange={onChange}
+          onDragStart={onDragStart}
+        />
+      </summary>
+      <BoxSpacingRows
+        prefix={prefix}
+        values={values}
+        configs={configs}
+        disabled={disabled}
+        linkedBlock={linkedBlock}
+        linkedInline={linkedInline}
+        activeScrubKeys={activeScrubKeys}
+        onLinkedBlockChange={onLinkedBlockChange}
+        onLinkedInlineChange={onLinkedInlineChange}
+        onChange={onChange}
+        onDragStart={onDragStart}
+        onReset={onReset}
+      />
+    </details>
+  );
+}
+
+function BoxSpacingPreview({
+  prefix,
+  values,
+  configs,
+  disabled,
+  linkedBlock,
+  linkedInline,
+  onChange,
+  onDragStart
+}: {
+  prefix: "margin" | "padding";
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  linkedBlock: boolean;
+  linkedInline: boolean;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+}) {
+  const keys: readonly BoxSpacingProperty[] = prefix === "margin"
+    ? ["marginTop", "marginRight", "marginBottom", "marginLeft"]
+    : ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
+  const blockKeys: readonly BoxSpacingProperty[] = prefix === "margin"
+    ? ["marginTop", "marginBottom"]
+    : ["paddingTop", "paddingBottom"];
+  const inlineKeys: readonly BoxSpacingProperty[] = prefix === "margin"
+    ? ["marginLeft", "marginRight"]
+    : ["paddingLeft", "paddingRight"];
+
+  return (
+    <span className="dom-ai-box-preview" aria-label={`${prefix === "margin" ? "外边距" : "内边距"}预览`}>
+      {keys.map((key) => {
+        const linkedConfigs = blockKeys.includes(key) && linkedBlock
+          ? blockKeys.map((item) => configs[item])
+          : inlineKeys.includes(key) && linkedInline
+            ? inlineKeys.map((item) => configs[item])
+            : undefined;
+        return (
+          <BoxSpacingPreviewInput
+            key={key}
+            config={configs[key]}
+            value={values[key]}
+            disabled={disabled}
+            linkedConfigs={linkedConfigs}
+            onChange={(value) => onChange(configs[key], value, linkedConfigs)}
+            onDragStart={onDragStart}
+          />
+        );
+      })}
+    </span>
+  );
+}
+
+function BoxSpacingPreviewInput({
+  config,
+  value,
+  disabled,
+  linkedConfigs,
+  onChange,
+  onDragStart
+}: {
+  config: NumericAdjusterConfig;
+  value: string;
+  disabled: boolean;
+  linkedConfigs?: NumericAdjusterConfig[];
+  onChange: (value: string) => void;
+  onDragStart: NumericDragHandler;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const skipBlurCommitRef = useRef(false);
+  const [editing, setEditing] = useState(false);
+  const numericValue = pxNumber(value);
+  const displayValue = Number.isFinite(numericValue) ? `${roundToPrecision(numericValue, config.precision)}` : "";
+  const [draftValue, setDraftValue] = useState(displayValue);
+  const renderedValue = editing ? draftValue : displayValue;
+
+  useEffect(() => {
+    if (!editing) setDraftValue(displayValue);
+  }, [displayValue, editing]);
+
+  const stopSummaryToggle = useCallback((event: React.SyntheticEvent) => {
+    event.stopPropagation();
+  }, []);
+
+  const handleFocus = useCallback((event: React.FocusEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    skipBlurCommitRef.current = false;
+    setEditing(true);
+    setDraftValue(displayValue);
+    window.requestAnimationFrame(() => inputRef.current?.select());
+  }, [displayValue]);
+
+  const handleBlur = useCallback(() => {
+    setEditing(false);
+    if (skipBlurCommitRef.current) {
+      skipBlurCommitRef.current = false;
+      setDraftValue(displayValue);
+      return;
+    }
+    onChange(draftValue.trim());
+  }, [displayValue, draftValue, onChange]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      skipBlurCommitRef.current = true;
+      setDraftValue(displayValue);
+      setEditing(false);
+      event.currentTarget.blur();
+    }
+  }, [displayValue]);
+
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    onDragStart(config, event, linkedConfigs);
+  }, [config, linkedConfigs, onDragStart]);
+
+  return (
+    <input
+      ref={inputRef}
+      className="dom-ai-box-preview-input"
+      type="number"
+      disabled={disabled}
+      value={renderedValue}
+      min={config.min}
+      max={config.max}
+      step={config.step}
+      title="点击输入数值，按住上下拖动调整"
+      onClick={stopSummaryToggle}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      onChange={(event) => setDraftValue(event.currentTarget.value)}
+      onPointerDown={handlePointerDown}
+      onWheel={(event) => {
+        event.stopPropagation();
+        if (event.currentTarget.ownerDocument.activeElement === event.currentTarget) {
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function BoxSpacingRows({
+  prefix,
+  values,
+  configs,
+  disabled,
+  linkedBlock,
+  linkedInline,
+  activeScrubKeys,
+  onLinkedBlockChange,
+  onLinkedInlineChange,
+  onChange,
+  onDragStart,
+  onReset
+}: {
+  prefix: "margin" | "padding";
+  values: EditableStyleValues;
+  configs: NumericAdjusterConfigs;
+  disabled: boolean;
+  linkedBlock: boolean;
+  linkedInline: boolean;
+  activeScrubKeys: ReadonlySet<keyof EditableStyleValues> | null;
+  onLinkedBlockChange: (linked: boolean) => void;
+  onLinkedInlineChange: (linked: boolean) => void;
+  onChange: NumericChangeHandler;
+  onDragStart: NumericDragHandler;
+  onReset: (property: keyof EditableStyleValues, cssProperty: string) => (() => void) | undefined;
+}) {
+  const rows = prefix === "margin"
+    ? [
+        { label: "上", key: "marginTop" as const, css: "margin-top" },
+        { label: "底部", key: "marginBottom" as const, css: "margin-bottom" },
+        { label: "左", key: "marginLeft" as const, css: "margin-left" },
+        { label: "右", key: "marginRight" as const, css: "margin-right" }
+      ]
+    : [
+        { label: "上", key: "paddingTop" as const, css: "padding-top" },
+        { label: "底部", key: "paddingBottom" as const, css: "padding-bottom" },
+        { label: "左", key: "paddingLeft" as const, css: "padding-left" },
+        { label: "右", key: "paddingRight" as const, css: "padding-right" }
+      ];
+  const blockKeys: readonly BoxSpacingProperty[] = prefix === "margin"
+    ? ["marginTop", "marginBottom"]
+    : ["paddingTop", "paddingBottom"];
+  const inlineKeys: readonly BoxSpacingProperty[] = prefix === "margin"
+    ? ["marginLeft", "marginRight"]
+    : ["paddingLeft", "paddingRight"];
+  const visibleRows = activeScrubKeys ? rows.filter((row) => activeScrubKeys.has(row.key)) : rows;
+  const showBlockLink = visibleRows.some((row) => row.key === blockKeys[0])
+    && visibleRows.some((row) => row.key === blockKeys[1]);
+  const showInlineLink = visibleRows.some((row) => row.key === inlineKeys[0])
+    && visibleRows.some((row) => row.key === inlineKeys[1]);
+
+  return (
+    <div className="dom-ai-nested-property-list">
+      {visibleRows.map((row) => {
+        const reset = onReset(row.key, row.css);
+        const linkedConfigs = blockKeys.includes(row.key) && linkedBlock
+          ? blockKeys.map((key) => configs[key])
+          : inlineKeys.includes(row.key) && linkedInline
+            ? inlineKeys.map((key) => configs[key])
+            : undefined;
+        return (
+          <div className="dom-ai-linked-dimension-row" key={row.key}>
+            <span className={`dom-ai-style-row-label ${
+              (row.key === blockKeys[0] && showBlockLink) || (row.key === inlineKeys[0] && showInlineLink)
+                ? "dom-ai-spacing-linked-label"
+                : ""
+            }`}>
+              {row.key === blockKeys[0] && showBlockLink ? (
+                <span className="dom-ai-spacing-link-glyph">
+                  <ConnectorBracket />
+                  <button
+                    type="button"
+                    className={`dom-ai-link-toggle ${linkedBlock ? "dom-ai-link-toggle-active" : ""}`}
+                    aria-pressed={linkedBlock}
+                    aria-label={linkedBlock ? "取消联动上下边距" : "联动上下边距"}
+                    title={linkedBlock ? "取消联动上下边距" : "联动上下边距"}
+                    onClick={() => onLinkedBlockChange(!linkedBlock)}
+                  >
+                    <Link2 size={10} />
+                  </button>
+                </span>
+              ) : null}
+              {row.key === inlineKeys[0] && showInlineLink ? (
+                <span className="dom-ai-spacing-link-glyph">
+                  <ConnectorBracket />
+                  <button
+                    type="button"
+                    className={`dom-ai-link-toggle ${linkedInline ? "dom-ai-link-toggle-active" : ""}`}
+                    aria-pressed={linkedInline}
+                    aria-label={linkedInline ? "取消联动左右边距" : "联动左右边距"}
+                    title={linkedInline ? "取消联动左右边距" : "联动左右边距"}
+                    onClick={() => onLinkedInlineChange(!linkedInline)}
+                  >
+                    <Link2 size={10} />
+                  </button>
+                </span>
+              ) : null}
+              <span>{row.label}</span>
+            </span>
+            <div className="dom-ai-style-row-control">
+              {reset ? (
+                <button type="button" className="dom-ai-row-reset" aria-label={`重置${row.label}`} title={`重置${row.label}`} onClick={reset}>
+                  <RotateCcw size={12} />
+                </button>
+              ) : null}
+              <InlineNumericControl
+                config={configs[row.key]}
+                value={values[row.key]}
+                disabled={disabled}
+                compact
+                linkedConfigs={linkedConfigs}
+                onChange={(value) => onChange(configs[row.key], value, linkedConfigs)}
+                onDragStart={onDragStart}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ConnectorBracket() {
+  return (
+    <svg aria-hidden="true" className="dom-ai-connector-bracket" fill="none" viewBox="0 0 36 62">
+      <path d="M28 14H2M28 14V48M28 48H2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function StyleTuneIcon({ size }: { size: number }) {
+  return <Settings2 aria-hidden="true" size={size} strokeWidth={2.15} />;
+}
+
+function CodexGripDots() {
+  return (
+    <span className="dom-ai-codex-grip" aria-hidden="true">
+      {Array.from({ length: 6 }, (_, index) => (
+        <i key={index} />
+      ))}
+    </span>
+  );
+}
+
+function formatCompactNumber(value: string): string {
+  const number = pxNumber(value);
+  if (!Number.isFinite(number)) return "-";
+  return `${roundToPrecision(number, 0.1)}`;
 }
 
 function MeasurementOverlay({
@@ -2319,15 +4411,18 @@ function getTargetElement(event: MouseEvent): Element | null {
   return hitElement;
 }
 
-function shouldDeferPointerToEmbeddedContent(event: MouseEvent): boolean {
+function shouldDeferPointerToEmbeddedContent(event: MouseEvent, lastChildFrameHoverAt = 0): boolean {
   if (isEmbeddedFrameWindow()) return false;
-  return document.elementsFromPoint(event.clientX, event.clientY).some(isEmbeddedContentHost);
+  const embeddedHost = document.elementsFromPoint(event.clientX, event.clientY).find(isEmbeddedContentHost);
+  if (!embeddedHost) return false;
+  return performance.now() - lastChildFrameHoverAt < 260;
 }
 
-function isPointerLeavingForEmbeddedContent(event: MouseEvent): boolean {
+function isPointerLeavingForEmbeddedContent(event: MouseEvent, lastChildFrameHoverAt = 0): boolean {
   if (isEmbeddedFrameWindow()) return false;
+  if (performance.now() - lastChildFrameHoverAt >= 260) return false;
   if (event.relatedTarget instanceof Element && isEmbeddedContentHost(event.relatedTarget)) return true;
-  return shouldDeferPointerToEmbeddedContent(event);
+  return shouldDeferPointerToEmbeddedContent(event, lastChildFrameHoverAt);
 }
 
 function isEmbeddedContentHost(element: Element): boolean {
@@ -2607,6 +4702,7 @@ function getElementInspection(element: Element): HoverInspection {
     key: getElementMeasurementKey(element, documentRect),
     label: getElementLabel(element),
     element,
+    textContent: getEditableElementText(element),
     viewportRect: rect,
     documentRect,
     fontSize: styles.fontSize,
@@ -2618,11 +4714,96 @@ function getElementInspection(element: Element): HoverInspection {
     display: styles.display,
     position: styles.position,
     opacity: styles.opacity,
+    textAlign: styles.textAlign,
+    flexDirection: styles.flexDirection,
+    justifyContent: styles.justifyContent,
+    alignItems: styles.alignItems,
+    gridAutoFlow: styles.gridAutoFlow,
     zIndex: styles.zIndex,
     gap: styles.gap,
+    rowGap: styles.rowGap,
+    columnGap: styles.columnGap,
     margin: getBoxValue(styles, "margin"),
     padding: getBoxValue(styles, "padding"),
-    borderRadius: styles.borderRadius
+    borderRadius: styles.borderRadius,
+    borderColor: styles.borderColor,
+    borderWidth: styles.borderWidth,
+    width: styles.width,
+    height: styles.height
+  };
+}
+
+function serializeHoverInspection(inspection: HoverInspection): SerializableHoverInspection {
+  const { element: _element, ...snapshot } = inspection;
+  return snapshot;
+}
+
+function getIframeHostForMessageSource(source: MessageEventSource | null): HTMLIFrameElement | null {
+  if (!source || typeof MessagePort !== "undefined" && source instanceof MessagePort) return null;
+  return Array.from(document.querySelectorAll("iframe"))
+    .find((iframe) => iframe.contentWindow === source) ?? null;
+}
+
+function createTopComposerStateFromIframeSelection(payload: IframeSelectionPayload, frameHost: HTMLIFrameElement): ComposerState {
+  const frameRect = frameHost.getBoundingClientRect();
+  const frameDocumentRect = {
+    x: frameRect.left + window.scrollX,
+    y: frameRect.top + window.scrollY,
+    width: frameRect.width,
+    height: frameRect.height
+  };
+  const viewportRect = {
+    x: frameRect.left + payload.inspection.viewportRect.x,
+    y: frameRect.top + payload.inspection.viewportRect.y,
+    width: payload.inspection.viewportRect.width,
+    height: payload.inspection.viewportRect.height
+  };
+  const documentRect = {
+    x: frameDocumentRect.x + payload.inspection.viewportRect.x,
+    y: frameDocumentRect.y + payload.inspection.viewportRect.y,
+    width: payload.inspection.documentRect.width,
+    height: payload.inspection.documentRect.height
+  };
+  const draftRect = {
+    ...payload.draft.rect,
+    x: viewportRect.x,
+    y: viewportRect.y,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+  const draftPin = payload.draft.pin
+    ? {
+        x: payload.pointerViewport
+          ? frameDocumentRect.x + payload.pointerViewport.x
+          : frameDocumentRect.x + (payload.draft.pin.x - payload.draft.rect.scrollX),
+        y: payload.pointerViewport
+          ? frameDocumentRect.y + payload.pointerViewport.y
+          : frameDocumentRect.y + (payload.draft.pin.y - payload.draft.rect.scrollY)
+      }
+    : undefined;
+  const draft = {
+    ...payload.draft,
+    rect: draftRect,
+    pin: draftPin,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      userAgent: navigator.userAgent
+    }
+  };
+
+  return {
+    draft,
+    inspection: {
+      ...payload.inspection,
+      key: `iframe-${payload.context.frameId ?? "unknown"}:${payload.inspection.key}`,
+      viewportRect,
+      documentRect
+    },
+    initialScreenshot: payload.initialScreenshot,
+    remoteInlineStyleSnapshot: payload.inlineStyleSnapshot ?? {},
+    fontFamilies: payload.fontFamilies
   };
 }
 
@@ -2751,6 +4932,7 @@ function getInspectionForAnnotation(annotation: DomAnnotation): HoverInspection 
   return {
     key: `annotation-${annotation.id}`,
     label: getAnnotationTargetLabel(annotation),
+    textContent: annotation.element.text ?? "",
     viewportRect: {
       x: annotation.rect.x,
       y: annotation.rect.y,
@@ -2767,11 +4949,22 @@ function getInspectionForAnnotation(annotation: DomAnnotation): HoverInspection 
     display: annotation.computedStyles.display ?? "-",
     position: annotation.computedStyles.position ?? "-",
     opacity: annotation.computedStyles.opacity ?? "-",
+    textAlign: annotation.computedStyles.textAlign ?? "-",
+    flexDirection: annotation.computedStyles.flexDirection ?? "row",
+    justifyContent: annotation.computedStyles.justifyContent ?? "flex-start",
+    alignItems: annotation.computedStyles.alignItems ?? "stretch",
+    gridAutoFlow: annotation.computedStyles.gridAutoFlow ?? "row",
     zIndex: annotation.computedStyles.zIndex ?? "-",
     gap: annotation.computedStyles.gap ?? "-",
+    rowGap: annotation.computedStyles.rowGap ?? annotation.computedStyles.gap ?? "-",
+    columnGap: annotation.computedStyles.columnGap ?? annotation.computedStyles.gap ?? "-",
     margin: getComputedBoxSnapshot(annotation.computedStyles, "margin"),
     padding: getComputedBoxSnapshot(annotation.computedStyles, "padding"),
-    borderRadius: annotation.computedStyles.borderRadius ?? "-"
+    borderRadius: annotation.computedStyles.borderRadius ?? "-",
+    borderColor: annotation.computedStyles.borderColor ?? "rgba(0, 0, 0, 0)",
+    borderWidth: annotation.computedStyles.borderWidth ?? "-",
+    width: annotation.computedStyles.width ?? "-",
+    height: annotation.computedStyles.height ?? "-"
   };
 }
 
@@ -2835,17 +5028,6 @@ function getReferenceBorderRadius(reference: AnnotationReference): string | unde
   return normalizeBorderRadius(reference.computedStyles.borderRadius);
 }
 
-function getComputedBoxSnapshot(styles: Record<string, string>, prefix: "margin" | "padding"): string {
-  const shorthand = styles[prefix];
-  if (shorthand) return shorthand;
-  return [
-    styles[`${prefix}Top`],
-    styles[`${prefix}Right`],
-    styles[`${prefix}Bottom`],
-    styles[`${prefix}Left`]
-  ].filter(Boolean).join(" ") || "-";
-}
-
 function getElementMeasurementKey(element: Element, rect: HoverInspection["documentRect"]): string {
   return [
     getElementLabel(element),
@@ -2864,188 +5046,6 @@ function getInspectionIdentity(inspection: HoverInspection): string {
   return inspection.element ? getCssSelector(inspection.element) : inspection.key;
 }
 
-function getElementDistanceLines(from: HoverInspection["documentRect"], to: HoverInspection["documentRect"]): MeasurementLine[] {
-  if (containsRect(from, to)) return getContainedDistanceLines(to, from);
-  if (containsRect(to, from)) return getContainedDistanceLines(from, to);
-
-  const lines: MeasurementLine[] = [];
-  const fromRight = from.x + from.width;
-  const toRight = to.x + to.width;
-  const fromBottom = from.y + from.height;
-  const toBottom = to.y + to.height;
-  const verticalGuideY = getOverlapCenter(from.y, fromBottom, to.y, toBottom) ?? midpoint(from.y, fromBottom, to.y, toBottom);
-  const horizontalGuideX = getOverlapCenter(from.x, fromRight, to.x, toRight) ?? midpoint(from.x, fromRight, to.x, toRight);
-
-  if (fromRight <= to.x) {
-    lines.push(createHorizontalMeasure("between-horizontal", fromRight, verticalGuideY, to.x - fromRight));
-  } else if (toRight <= from.x) {
-    lines.push(createHorizontalMeasure("between-horizontal", toRight, verticalGuideY, from.x - toRight));
-  }
-
-  if (fromBottom <= to.y) {
-    lines.push(createVerticalMeasure("between-vertical", horizontalGuideX, fromBottom, to.y - fromBottom));
-  } else if (toBottom <= from.y) {
-    lines.push(createVerticalMeasure("between-vertical", horizontalGuideX, toBottom, from.y - toBottom));
-  }
-
-  return lines.filter((line) => line.length > 0);
-}
-
-function getContainedDistanceLines(
-  inner: HoverInspection["documentRect"],
-  outer: HoverInspection["documentRect"]
-): MeasurementLine[] {
-  const innerRight = inner.x + inner.width;
-  const outerRight = outer.x + outer.width;
-  const innerBottom = inner.y + inner.height;
-  const outerBottom = outer.y + outer.height;
-  const centerX = inner.x + inner.width / 2;
-  const centerY = inner.y + inner.height / 2;
-
-  return [
-    createVerticalMeasure("inside-top", centerX, outer.y, Math.max(0, inner.y - outer.y)),
-    createHorizontalMeasure("inside-right", innerRight, centerY, Math.max(0, outerRight - innerRight)),
-    createVerticalMeasure("inside-bottom", centerX, innerBottom, Math.max(0, outerBottom - innerBottom)),
-    createHorizontalMeasure("inside-left", outer.x, centerY, Math.max(0, inner.x - outer.x))
-  ];
-}
-
-function containsRect(outer: HoverInspection["documentRect"], inner: HoverInspection["documentRect"]): boolean {
-  const outerRight = outer.x + outer.width;
-  const outerBottom = outer.y + outer.height;
-  const innerRight = inner.x + inner.width;
-  const innerBottom = inner.y + inner.height;
-  return outer.x <= inner.x && outer.y <= inner.y && outerRight >= innerRight && outerBottom >= innerBottom;
-}
-
-function createHorizontalMeasure(key: string, x: number, y: number, length: number): MeasurementLine {
-  return {
-    key,
-    orientation: "horizontal",
-    x,
-    y,
-    length,
-    label: compactPxNumber(length),
-    labelX: x + length / 2,
-    labelY: y
-  };
-}
-
-function createVerticalMeasure(key: string, x: number, y: number, length: number): MeasurementLine {
-  return {
-    key,
-    orientation: "vertical",
-    x,
-    y,
-    length,
-    label: compactPxNumber(length),
-    labelX: x,
-    labelY: y + length / 2
-  };
-}
-
-function getOverlapCenter(aStart: number, aEnd: number, bStart: number, bEnd: number): number | null {
-  const start = Math.max(aStart, bStart);
-  const end = Math.min(aEnd, bEnd);
-  return start < end ? start + (end - start) / 2 : null;
-}
-
-function midpoint(aStart: number, aEnd: number, bStart: number, bEnd: number) {
-  return (aStart + aEnd + bStart + bEnd) / 4;
-}
-
-function getBoxValue(styles: CSSStyleDeclaration, prefix: "margin" | "padding"): string {
-  const top = compactPx(styles.getPropertyValue(`${prefix}-top`));
-  const right = compactPx(styles.getPropertyValue(`${prefix}-right`));
-  const bottom = compactPx(styles.getPropertyValue(`${prefix}-bottom`));
-  const left = compactPx(styles.getPropertyValue(`${prefix}-left`));
-  return `${top} ${right} ${bottom} ${left}`;
-}
-
-function compactPx(value: string): string {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed)) return value;
-  return `${Math.round(parsed * 10) / 10}px`;
-}
-
-function compactPxNumber(value: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return `${Math.round(value * 10) / 10}px`;
-}
-
-function compactUnitValue(value: string): string {
-  if (!value) return "-";
-  return compactPx(value);
-}
-
-function getPrimaryFontFamily(value: string): string {
-  const [primary] = value.split(",");
-  return (primary || value).trim().replace(/^["']|["']$/g, "") || "-";
-}
-
-function formatColor(value: string, mode: ColorMode): string {
-  const color = parseCssRgb(value);
-  if (!color) return value;
-  if (mode === "rgb") return color.a < 1 ? `rgba(${color.r}, ${color.g}, ${color.b}, ${roundColor(color.a)})` : `rgb(${color.r}, ${color.g}, ${color.b})`;
-  if (mode === "hex") return rgbToHex(color);
-  return rgbToHsl(color);
-}
-
-function parseCssRgb(value: string): { r: number; g: number; b: number; a: number } | null {
-  const match = value.match(/^rgba?\((.+)\)$/i);
-  if (!match) return null;
-  const parts = match[1].split(/,\s*/).map((part) => part.trim());
-  if (parts.length < 3) return null;
-  const r = Number.parseFloat(parts[0]);
-  const g = Number.parseFloat(parts[1]);
-  const b = Number.parseFloat(parts[2]);
-  const a = parts[3] === undefined ? 1 : Number.parseFloat(parts[3]);
-  if (![r, g, b, a].every(Number.isFinite)) return null;
-  return {
-    r: clampColor(r),
-    g: clampColor(g),
-    b: clampColor(b),
-    a: Math.min(1, Math.max(0, a))
-  };
-}
-
-function rgbToHex(color: { r: number; g: number; b: number; a: number }): string {
-  const hex = [color.r, color.g, color.b].map((channel) => channel.toString(16).padStart(2, "0")).join("");
-  if (color.a >= 1) return `#${hex}`;
-  return `#${hex}${Math.round(color.a * 255).toString(16).padStart(2, "0")}`;
-}
-
-function rgbToHsl(color: { r: number; g: number; b: number; a: number }): string {
-  const r = color.r / 255;
-  const g = color.g / 255;
-  const b = color.b / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const lightness = (max + min) / 2;
-  let hue = 0;
-  let saturation = 0;
-
-  if (max !== min) {
-    const delta = max - min;
-    saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-    if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0);
-    if (max === g) hue = (b - r) / delta + 2;
-    if (max === b) hue = (r - g) / delta + 4;
-    hue *= 60;
-  }
-
-  const hsl = `${Math.round(hue)} ${Math.round(saturation * 100)}% ${Math.round(lightness * 100)}%`;
-  return color.a < 1 ? `hsl(${hsl} / ${roundColor(color.a)})` : `hsl(${hsl})`;
-}
-
-function clampColor(value: number): number {
-  return Math.min(255, Math.max(0, Math.round(value)));
-}
-
-function roundColor(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
 function getDocumentSize(): DocumentSize {
   const body = document.body;
   const element = document.documentElement;
@@ -3059,17 +5059,60 @@ function clampWithinDocument(left: number, width: number): number {
   return Math.min(window.scrollX + window.innerWidth - width - 16, Math.max(window.scrollX + 16, left));
 }
 
-function getComposerPosition(rect: HoverInspection["documentRect"]): { left: number; top: number } {
+function clampComposerPosition(left: number, top: number, estimatedHeight = COMPOSER_MIN_VISIBLE_HEIGHT): { left: number; top: number } {
+  const viewportLeft = window.scrollX + EDGE_GAP;
+  const viewportRight = window.scrollX + window.innerWidth - EDGE_GAP;
   const viewportTop = window.scrollY + EDGE_GAP;
   const viewportBottom = window.scrollY + window.innerHeight - EDGE_GAP;
+  return {
+    left: clamp(left, viewportLeft, Math.max(viewportLeft, viewportRight - COMPOSER_WIDTH)),
+    top: clamp(top, viewportTop, Math.max(viewportTop, viewportBottom - estimatedHeight))
+  };
+}
+
+function getComposerPosition(
+  rect: HoverInspection["documentRect"],
+  anchor?: AnnotationPinAnchor,
+  expanded = false
+): { left: number; top: number } {
+  const estimatedHeight = expanded ? COMPOSER_MIN_VISIBLE_HEIGHT : COMPOSER_COMPACT_ESTIMATED_HEIGHT;
+  const viewportTop = window.scrollY + EDGE_GAP;
+  const viewportBottom = window.scrollY + window.innerHeight - EDGE_GAP;
+  const viewportLeft = window.scrollX + EDGE_GAP;
+  const viewportRight = window.scrollX + window.innerWidth - EDGE_GAP;
+  const gap = 12;
+
+  if (anchor) {
+    const candidates = [
+      { left: anchor.x + gap, top: anchor.y + gap },
+      { left: anchor.x + gap, top: anchor.y - estimatedHeight / 2 + 16 },
+      { left: anchor.x + gap, top: anchor.y - estimatedHeight - gap },
+      { left: rect.x + rect.width + gap, top: rect.y + rect.height + gap },
+      { left: rect.x + rect.width + gap, top: rect.y + rect.height / 2 - estimatedHeight / 2 },
+      { left: anchor.x - COMPOSER_WIDTH - gap, top: anchor.y + gap },
+      { left: anchor.x - COMPOSER_WIDTH - gap, top: anchor.y - estimatedHeight / 2 + 16 },
+      { left: anchor.x - COMPOSER_WIDTH - gap, top: anchor.y - estimatedHeight - gap },
+      { left: rect.x - COMPOSER_WIDTH - gap, top: rect.y + rect.height + gap },
+      { left: rect.x - COMPOSER_WIDTH - gap, top: rect.y + rect.height / 2 - estimatedHeight / 2 }
+    ];
+    const fitting = candidates.find((candidate) => (
+      candidate.left >= viewportLeft
+      && candidate.left + COMPOSER_WIDTH <= viewportRight
+      && candidate.top >= viewportTop
+      && candidate.top + estimatedHeight <= viewportBottom
+    ));
+    if (fitting) return fitting;
+    return clampComposerPosition(candidates[0].left, candidates[0].top, estimatedHeight);
+  }
+
   const belowTop = rect.y + rect.height + 12;
   const aboveTop = rect.y - COMPOSER_ESTIMATED_HEIGHT - 12;
-  const hasRoomBelow = viewportBottom - belowTop >= COMPOSER_MIN_VISIBLE_HEIGHT;
+  const hasRoomBelow = viewportBottom - belowTop >= estimatedHeight;
   const preferredTop = hasRoomBelow ? belowTop : aboveTop;
 
   return {
     left: clampWithinDocument(rect.x, COMPOSER_WIDTH),
-    top: Math.max(viewportTop, Math.min(preferredTop, viewportBottom - COMPOSER_MIN_VISIBLE_HEIGHT))
+    top: Math.max(viewportTop, Math.min(preferredTop, viewportBottom - estimatedHeight))
   };
 }
 
@@ -3211,6 +5254,8 @@ function cropScreenshot(fullDataUrl: string, rect: { x: number; y: number; width
 
 /** Show image preview overlay directly on documentElement (outside Shadow DOM to avoid contain:layout issues) */
 function showImagePreviewOverlay(dataUrl: string) {
+  if (isEmbeddedFrameWindow()) return;
+
   // Remove existing overlay if any
   document.getElementById("dom-ai-img-preview")?.remove();
 

@@ -148,7 +148,6 @@ function App() {
   }
 
   useEffect(() => {
-    void ensureAgentBridgeForInspectedTab();
     installConsoleHook();
     const timer = window.setInterval(() => {
       readConsoleEvents().then((items) => setConsoleEvents(dedupeConsole(items).slice(0, MAX_EVENTS))).catch(() => undefined);
@@ -1131,25 +1130,6 @@ function SuspiciousRulesPanel({
 
 function installConsoleHook() {
   chrome.devtools.inspectedWindow.eval(`(${consoleHookSource})()`);
-}
-
-async function ensureAgentBridgeForInspectedTab() {
-  const tabId = chrome.devtools.inspectedWindow.tabId;
-  if (!tabId) return;
-
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: ["agentBridge.js"],
-      world: "MAIN"
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: ["agentBridgeHost.js"]
-    });
-  } catch {
-    // Restricted pages cannot be scripted; the DevTools panel can still show network/console data.
-  }
 }
 
 function readConsoleEvents(): Promise<MonitorEvent[]> {

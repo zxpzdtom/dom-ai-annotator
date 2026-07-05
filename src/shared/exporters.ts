@@ -31,6 +31,7 @@ export function exportAnnotationsAsMarkdown(
       `- 视口: ${item.viewport.width}x${item.viewport.height} @ ${item.viewport.devicePixelRatio}x`,
       `- 优先级: ${severityLabels[item.feedback.severity]}`,
       `- 关键样式: ${formatKeyStyles(item)}`,
+      item.styleChanges?.length ? `- 样式变更: ${formatStyleChanges(item.styleChanges)}` : undefined,
       item.references?.length ? `- 引用对象: ${item.references.map((reference) => reference.label).join(", ")}` : undefined,
       "",
       "**反馈**",
@@ -337,6 +338,10 @@ function formatKeyStyles(annotation: DomAnnotation): string {
     ["padding", styles.padding],
     ["gap", styles.gap],
     ["border-radius", styles.borderRadius],
+    ["border-color", styles.borderColor],
+    ["border-width", styles.borderWidth],
+    ["width", styles.width],
+    ["height", styles.height],
     ["opacity", styles.opacity],
     ["z-index", styles.zIndex]
   ].filter(([, value]) => value && value !== "normal" && value !== "none" && value !== "auto");
@@ -388,9 +393,17 @@ function formatStyleSnapshot(styles: Record<string, string>): string {
     ["padding", styles.padding],
     ["gap", styles.gap],
     ["border-radius", styles.borderRadius],
+    ["border-color", styles.borderColor],
+    ["border-width", styles.borderWidth],
+    ["width", styles.width],
+    ["height", styles.height],
     ["opacity", styles.opacity],
     ["z-index", styles.zIndex]
   ].filter(([, value]) => value && value !== "normal" && value !== "none" && value !== "auto");
 
   return entries.map(([key, value]) => `${key}=${value}`).join("; ") || "无关键样式快照";
+}
+
+function formatStyleChanges(changes: NonNullable<DomAnnotation["styleChanges"]>): string {
+  return changes.map((change) => `${change.property}: ${change.previousValue || "-"} -> ${change.value || "-"}`).join("; ");
 }

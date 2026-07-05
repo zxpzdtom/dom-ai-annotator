@@ -42,7 +42,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["content.js", "monitorBridge.js", "agentBridge.js", "jsonViewerVendor.js", "chunks/*.js", "assets/*"],
+      "resources": ["content.js", "monitorBridge.js", "jsonViewerVendor.js", "chunks/*.js", "assets/*"],
       "matches": ["<all_urls>"]
     }
   ]
