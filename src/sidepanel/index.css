@@ -38,6 +38,25 @@ textarea {
   width: 100%;
 }
 
+.dom-ai-annotation-pin-badge {
+  border-radius: 8px 8px 8px 3px;
+  isolation: isolate;
+}
+
+.dom-ai-annotation-pin-badge::after {
+  position: absolute;
+  bottom: 2px;
+  left: 3px;
+  z-index: -1;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: inherit;
+  content: "";
+  transform: rotate(45deg);
+  transform-origin: center;
+}
+
 .scroll-mask-x {
   -webkit-mask-image: linear-gradient(to right, #000, #000 calc(100% - 10px), transparent);
   mask-image: linear-gradient(to right, #000, #000 calc(100% - 10px), transparent);

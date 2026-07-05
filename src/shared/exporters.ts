@@ -1,6 +1,12 @@
 import type { AnnotationReference, DomAnnotation } from "./types";
 import { normalizeStatus } from "./storage";
 import { severityLabels, statusLabels } from "./status";
+import {
+  formatAnnotationFeedbackForMarkdown,
+  formatStyleChangesForMarkdown,
+  parseStyleChanges,
+  stripGeneratedStyleComment
+} from "./styleChanges";
 
 export function exportAnnotationsAsJson(annotations: DomAnnotation[]): string {
   return JSON.stringify(stripScreenshots(annotations), null, 2);
@@ -36,7 +42,7 @@ export function exportAnnotationsAsMarkdown(
       "",
       "**反馈**",
       "",
-      item.feedback.comment,
+      formatAnnotationFeedbackForMarkdown(item),
       "",
       item.references?.length ? "**涉及对象**" : undefined,
       item.references?.length ? "" : undefined,
@@ -85,9 +91,11 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
     const selector = getMarkdownCodeBullet(body, "Selector");
     const rect = parseMarkdownRect(getMarkdownBullet(body, "位置"));
     const viewport = parseMarkdownViewport(getMarkdownBullet(body, "视口"));
-    const comment = getMarkdownBlock(body, "反馈") || title.trim();
+    const styleChanges = parseStyleChanges(getMarkdownBullet(body, "样式变更"));
+    const feedbackBlock = getMarkdownBlock(body, "反馈") || title.trim();
+    const comment = stripGeneratedStyleComment(feedbackBlock, styleChanges);
 
-    if (!url || !selector || !rect || !viewport || !comment.trim()) continue;
+    if (!url || !selector || !rect || !viewport || (!comment.trim() && !styleChanges.length)) continue;
 
     const now = new Date().toISOString();
     const xpath = getMarkdownCodeBullet(body, "XPath");
@@ -99,7 +107,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
     const references = parseReferencedObjects(getMarkdownBlock(body, "涉及对象"), getMarkdownBullet(body, "页面标题") || "未命名页面");
 
     annotations.push({
-      id: createReadableMarkdownAnnotationId(url, selector, comment, annotations.length),
+      id: createReadableMarkdownAnnotationId(url, selector, comment || formatStyleChangesForMarkdown(styleChanges), annotations.length),
       url,
       title: getMarkdownBullet(body, "页面标题") || "未命名页面",
       createdAt: now,
@@ -116,6 +124,7 @@ function importAnnotationsFromReadableMarkdown(markdown: string): DomAnnotation[
         type: "bug",
         severity
       },
+      styleChanges: styleChanges.length ? styleChanges : undefined,
       references: references.length ? references : undefined,
       status
     });
@@ -405,5 +414,5 @@ function formatStyleSnapshot(styles: Record<string, string>): string {
 }
 
 function formatStyleChanges(changes: NonNullable<DomAnnotation["styleChanges"]>): string {
-  return changes.map((change) => `${change.property}: ${change.previousValue || "-"} -> ${change.value || "-"}`).join("; ");
+  return formatStyleChangesForMarkdown(changes);
 }

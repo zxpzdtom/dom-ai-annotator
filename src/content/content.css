@@ -794,6 +794,10 @@ textarea {
   min-width: 0;
 }
 
+.dom-ai-select-control-compact {
+  width: min(var(--dom-ai-control-number), 100%);
+}
+
 .dom-ai-select-trigger {
   display: grid;
   width: 100%;
@@ -1308,9 +1312,9 @@ textarea {
   position: absolute;
   z-index: 100;
   display: block;
-  width: 44px;
-  height: 38px;
-  border-radius: 14px 14px 14px 5px;
+  width: 32px;
+  height: 28px;
+  border-radius: 10px 10px 10px 4px;
   color: var(--dom-ai-pin-bg, #0f9f78);
   transform: translateY(-50%);
   isolation: isolate;
@@ -1318,10 +1322,10 @@ textarea {
 
 .dom-ai-pin::before {
   position: absolute;
-  top: -8px;
-  bottom: -8px;
-  left: 34px;
-  width: 28px;
+  top: -6px;
+  bottom: -6px;
+  left: 25px;
+  width: 22px;
   content: "";
 }
 
@@ -1335,7 +1339,7 @@ textarea {
 }
 
 .dom-ai-pin-placement-left::before {
-  right: 34px;
+  right: 25px;
   left: auto;
 }
 
@@ -1351,17 +1355,17 @@ textarea {
   position: relative;
   z-index: 2;
   display: inline-flex;
-  width: 44px;
-  height: 38px;
+  width: 32px;
+  height: 28px;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 14px 14px 14px 5px;
+  border-radius: 10px 10px 10px 4px;
   background: color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 12%, white);
   color: var(--dom-ai-pin-bg, #0f9f78);
   cursor: pointer;
-  padding: 4px;
-  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16), 0 0 0 2px rgba(255, 255, 255, 0.96), inset 0 0 0 1px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 24%, transparent);
+  padding: 2px;
+  box-shadow: 0 8px 18px rgba(17, 24, 39, 0.13), 0 0 0 1.5px rgba(255, 255, 255, 0.96), inset 0 0 0 1px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 22%, transparent);
   transition-property: background-color, border-radius, box-shadow, transform;
   transition-duration: 180ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -1369,10 +1373,10 @@ textarea {
 
 .dom-ai-pin-marker::after {
   position: absolute;
-  bottom: 3px;
-  left: 4px;
-  width: 10px;
-  height: 10px;
+  bottom: 2px;
+  left: 3px;
+  width: 7px;
+  height: 7px;
   border-radius: 2px;
   background: inherit;
   content: "";
@@ -1382,28 +1386,28 @@ textarea {
 }
 
 .dom-ai-pin-placement-left .dom-ai-pin-marker {
-  border-radius: 14px 14px 5px 14px;
+  border-radius: 10px 10px 4px 10px;
 }
 
 .dom-ai-pin-placement-left .dom-ai-pin-marker::after {
-  right: 4px;
+  right: 3px;
   left: auto;
 }
 
 .dom-ai-pin-placement-bottom .dom-ai-pin-marker,
 .dom-ai-pin-placement-top .dom-ai-pin-marker {
-  border-radius: 14px;
+  border-radius: 10px;
 }
 
 .dom-ai-pin-placement-bottom .dom-ai-pin-marker::after {
-  top: 3px;
+  top: 2px;
   bottom: auto;
   left: 50%;
   transform: translateX(-50%) rotate(45deg);
 }
 
 .dom-ai-pin-placement-top .dom-ai-pin-marker::after {
-  bottom: 3px;
+  bottom: 2px;
   left: 50%;
   transform: translateX(-50%) rotate(45deg);
 }
@@ -1412,16 +1416,16 @@ textarea {
   position: relative;
   z-index: 1;
   display: grid;
-  width: 36px;
-  height: 30px;
-  flex: 0 0 36px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   place-items: center;
-  border-radius: 10px 10px 10px 4px;
+  border-radius: 8px 8px 8px 3px;
   background: var(--dom-ai-pin-bg, #0f9f78);
   color: white;
-  box-shadow: 0 6px 14px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 24%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
-  font-size: 13px;
-  font-weight: 850;
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 22%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  font-size: 11px;
+  font-weight: 820;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   transition-property: background-color, transform;
@@ -1430,15 +1434,15 @@ textarea {
 }
 
 .dom-ai-pin-placement-left .dom-ai-pin-number {
-  border-radius: 10px 10px 4px 10px;
+  border-radius: 8px 8px 3px 8px;
 }
 
 .dom-ai-pin-placement-bottom .dom-ai-pin-number {
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .dom-ai-pin-placement-top .dom-ai-pin-number {
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .dom-ai-pin-card {
@@ -1470,6 +1474,7 @@ textarea {
   transform-origin: right center;
 }
 
+.dom-ai-pin-card-open .dom-ai-pin-card,
 .dom-ai-pin:hover .dom-ai-pin-card,
 .dom-ai-pin:focus-within .dom-ai-pin-card {
   opacity: 1;
@@ -1478,6 +1483,7 @@ textarea {
   filter: blur(0);
 }
 
+.dom-ai-pin-card-side-left.dom-ai-pin-card-open .dom-ai-pin-card,
 .dom-ai-pin-card-side-left:hover .dom-ai-pin-card,
 .dom-ai-pin-card-side-left:focus-within .dom-ai-pin-card {
   transform: translate(0, 0) scale(1);
@@ -1754,29 +1760,29 @@ textarea {
 .dom-ai-pin:hover .dom-ai-pin-marker,
 .dom-ai-pin:focus-within .dom-ai-pin-marker {
   background: color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 10%, white);
-  box-shadow: 0 18px 44px rgba(17, 24, 39, 0.18), 0 0 0 2px rgba(255, 255, 255, 0.98), inset 0 0 0 1px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 18%, transparent);
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.16), 0 0 0 1.5px rgba(255, 255, 255, 0.98), inset 0 0 0 1px color-mix(in srgb, var(--dom-ai-pin-bg, #0f9f78) 18%, transparent);
 }
 
 .dom-ai-pin:hover .dom-ai-pin-number,
 .dom-ai-pin:focus-within .dom-ai-pin-number {
   background: var(--dom-ai-pin-hover-bg, #087c62);
-  border-radius: 12px 12px 12px 5px;
+  border-radius: 9px 9px 9px 4px;
   transform: scale(1.02);
 }
 
 .dom-ai-pin-placement-left:hover .dom-ai-pin-number,
 .dom-ai-pin-placement-left:focus-within .dom-ai-pin-number {
-  border-radius: 12px 12px 5px 12px;
+  border-radius: 9px 9px 4px 9px;
 }
 
 .dom-ai-pin-placement-bottom:hover .dom-ai-pin-number,
 .dom-ai-pin-placement-bottom:focus-within .dom-ai-pin-number {
-  border-radius: 12px;
+  border-radius: 9px;
 }
 
 .dom-ai-pin-placement-top:hover .dom-ai-pin-number,
 .dom-ai-pin-placement-top:focus-within .dom-ai-pin-number {
-  border-radius: 12px;
+  border-radius: 9px;
 }
 
 .dom-ai-focused-annotation {

@@ -290,6 +290,37 @@ export function createEditableStyleValues(inspection: HoverInspection): Editable
   };
 }
 
+export function createEditableStyleValuesWithChanges(
+  inspection: HoverInspection,
+  changes: AnnotationStyleChange[] = []
+): EditableStyleValues {
+  const values = createEditableStyleValues(inspection);
+  for (const change of changes) {
+    const property = getEditableStylePropertyForChange(change.property);
+    if (!property) continue;
+    values[property] = change.value;
+  }
+  return values;
+}
+
+export function createEditableStyleBaselineValues(
+  inspection: HoverInspection,
+  changes: AnnotationStyleChange[] = []
+): EditableStyleValues {
+  const values = createEditableStyleValues(inspection);
+  for (const change of changes) {
+    const property = getEditableStylePropertyForChange(change.property);
+    if (!property) continue;
+    values[property] = change.previousValue;
+  }
+  return values;
+}
+
+export function getEditableStylePropertyForChange(property: string): keyof EditableStyleValues | null {
+  const field = EDITABLE_STYLE_FIELDS.find((item) => (item.cssProperty ?? "text") === property);
+  return field?.property ?? null;
+}
+
 function splitBoxValue(value: string): { top: string; right: string; bottom: string; left: string } {
   const parts = value.split(/\s+/).filter(Boolean);
   const [top = "0px", right = top, bottom = top, left = right] = parts;
@@ -427,13 +458,6 @@ function styleCssValueReflects(cssProperty: string, computedValue: string, expec
   }
 
   return computedValue.trim() === expectedValue.trim();
-}
-
-export function formatStyleChangeComment(changes: AnnotationStyleChange[]): string {
-  if (!changes.length) return "";
-  const preview = changes.slice(0, 3).map((change) => `${change.label} ${change.previousValue || "-"} -> ${change.value || "-"}`);
-  const suffix = changes.length > preview.length ? `，另 ${changes.length - preview.length} 项` : "";
-  return `调整样式：${preview.join("；")}${suffix}`;
 }
 
 export function cssColorToNativeInput(value: string): string {

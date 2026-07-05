@@ -44,6 +44,7 @@ import {
 import { exportAnnotationsAsMarkdown, importAnnotationsFromMarkdown } from "../shared/exporters";
 import { getExcludedUrlReason, isExcludedUrl } from "../shared/excludedUrls";
 import { writeClipboardText } from "../shared/clipboard";
+import { formatAnnotationFeedbackForMarkdown, formatStyleChangesForMarkdown, getVisibleAnnotationComment } from "../shared/styleChanges";
 
 type ActiveTab = {
   id?: number;
@@ -1263,6 +1264,7 @@ function AnnotationCard({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const title = getAnnotationTitle(annotation);
   const rectText = `${Math.round(annotation.rect.width)}x${Math.round(annotation.rect.height)}`;
+  const visibleComment = getVisibleAnnotationComment(annotation);
 
   function handleCardClick(event: React.MouseEvent<HTMLElement>) {
     if (selectionMode) {
@@ -1284,14 +1286,14 @@ function AnnotationCard({
           {selectionMode ? (
             <button
               data-card-action="true"
-              className={`grid h-[24px] w-6 shrink-0 place-items-center rounded-md text-xs font-bold transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.96] ${selected ? "bg-brand-600 text-white shadow-[0_4px_10px_rgba(15,159,120,0.24)]" : "bg-ink-50 text-ink-300 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)]"}`}
+              className={`grid h-6 w-6 shrink-0 place-items-center rounded-[8px] text-xs font-bold transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.96] ${selected ? "bg-brand-600 text-white shadow-[0_4px_10px_rgba(15,159,120,0.22),inset_0_0_0_1px_rgba(255,255,255,0.18)]" : "bg-ink-50 text-ink-300 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.1)]"}`}
               onClick={onToggleSelected}
               aria-label={selected ? "取消选择" : "选择标注"}
             >
               {selected ? <Check size={13} strokeWidth={2.7} /> : null}
             </button>
           ) : (
-            <span className={`relative grid h-[24px] w-6 shrink-0 place-items-center rounded-md text-[10px] font-extrabold leading-none text-white tabular-nums shadow-[0_4px_10px_rgba(17,24,39,0.1)] ${getStatusDotClass(status)}`}>
+            <span className={`dom-ai-annotation-pin-badge relative grid h-6 w-6 shrink-0 place-items-center text-[11px] font-[820] leading-none text-white tabular-nums shadow-[0_4px_10px_rgba(17,24,39,0.12),inset_0_0_0_1px_rgba(255,255,255,0.18)] ${getStatusDotClass(status)}`}>
               {index + 1}
             </span>
           )}
@@ -1304,7 +1306,9 @@ function AnnotationCard({
             <StatusPill status={status} compact />
             <SeverityPill severity={annotation.feedback.severity} compact />
           </div>
-          <p className="mt-1.5 line-clamp-3 whitespace-pre-line text-[14px] font-bold leading-5 text-ink-950">{annotation.feedback.comment}</p>
+          {visibleComment ? (
+            <p className="mt-1.5 line-clamp-3 whitespace-pre-line text-[14px] font-bold leading-5 text-ink-950">{visibleComment}</p>
+          ) : null}
           {annotation.styleChanges?.length ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {annotation.styleChanges.slice(0, 3).map((change) => (
@@ -2530,7 +2534,7 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     "",
     "Please fix the following UI issue. Use the selector and element info to locate the component in the codebase.",
     "",
-    `## Issue: ${annotation.feedback.comment.split("\n")[0]}`,
+    `## Issue: ${(getVisibleAnnotationComment(annotation) || annotation.styleChanges?.[0]?.label || "Style change").split("\n")[0]}`,
     "",
     `- **Selector:** \`${annotation.selector}\``,
     annotation.xpath ? `- **XPath:** \`${annotation.xpath}\`` : undefined,
@@ -2546,7 +2550,7 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     "",
     "### Full Comment",
     "",
-    annotation.feedback.comment,
+    formatAnnotationFeedbackForMarkdown(annotation),
     annotation.references?.length ? "\n### Objects\n\n" + formatAnnotationObjectsForPrompt(annotation) : undefined,
     annotation.feedback.expected ? `\n### Expected\n\n${annotation.feedback.expected}` : undefined,
     "",
@@ -2556,7 +2560,7 @@ function formatFixPrompt(annotation: DomAnnotation): string {
 }
 
 function formatAnnotationStyleChanges(changes: NonNullable<DomAnnotation["styleChanges"]>): string {
-  return changes.map((change) => `${change.property}: ${change.previousValue || "-"} -> ${change.value || "-"}`).join("; ");
+  return formatStyleChangesForMarkdown(changes);
 }
 
 function formatAnnotationObjectsForPrompt(annotation: DomAnnotation): string {

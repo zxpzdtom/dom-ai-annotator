@@ -24,15 +24,17 @@ import {
   applyEditableStyleValue,
   captureInlineStyleSnapshot,
   compactPxNumber,
+  createEditableStyleBaselineValues,
   createEditableStyleValues,
+  createEditableStyleValuesWithChanges,
   cssColorToNativeInput,
   formatColor,
   formatNumericStyleValue,
-  formatStyleChangeComment,
   getBoxValue,
   getComputedBoxSnapshot,
   getEditableElementText,
   getEditableStyleChanges,
+  getEditableStylePropertyForChange,
   getElementStyleTitle,
   getNumericAdjusterConfigs,
   isLayoutStyleRelevant,
@@ -65,6 +67,7 @@ import { isExcludedUrl } from "../shared/excludedUrls";
 import type { AnnotationDraft, AnnotationPinAnchor, AnnotationReference, AnnotationScreenshot, AnnotationStatus, AnnotationStyleChange, ContentMessage, DomAnnotation, ElementRect, FeedbackSeverity, MonitorEvent, MonitorSnapshot, PageContext } from "../shared/types";
 import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations, updateAnnotationScreenshot, updateAnnotationStatus } from "../shared/storage";
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
+import { getVisibleAnnotationComment } from "../shared/styleChanges";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 360;
@@ -72,8 +75,8 @@ const COMPOSER_ESTIMATED_HEIGHT = 400;
 const COMPOSER_MIN_VISIBLE_HEIGHT = 360;
 const COMPOSER_COMPACT_ESTIMATED_HEIGHT = 62;
 const EDGE_GAP = 16;
-const PIN_COLLAPSED_WIDTH = 44;
-const PIN_COLLAPSED_HEIGHT = 38;
+const PIN_COLLAPSED_WIDTH = 32;
+const PIN_COLLAPSED_HEIGHT = 28;
 const PIN_EXPANDED_WIDTH = 380;
 const PIN_CARD_ESTIMATED_HEIGHT = 318;
 const PIN_GAP = 8;
@@ -498,14 +501,19 @@ function App() {
       }
       if (message.type === "DOM_AI_REFRESH_PINS") void refreshAnnotations();
       if (message.type === "DOM_AI_FOCUS_ANNOTATION") {
+        const annotation = annotations.find((item) => item.id === message.id);
+        if (!annotation || !shouldHandleAnnotationAction(annotation, pageContext)) return;
         setPanelVisible(true);
         focusAndHighlightAnnotation(message.id, annotations);
       }
       if (message.type === "DOM_AI_FOCUS_REFERENCE") {
+        if (!shouldHandleAnnotationReferenceAction(message.reference, pageContext)) return;
         setPanelVisible(true);
         focusAndHighlightReference(message.reference);
       }
       if (message.type === "DOM_AI_EDIT_ANNOTATION") {
+        const annotation = annotations.find((item) => item.id === message.id);
+        if (!annotation || !shouldHandleAnnotationAction(annotation, pageContext)) return;
         setPanelVisible(true);
         openAnnotationEditor(message.id, annotations);
       }
@@ -991,6 +999,8 @@ function App() {
 
   if (!panelActive) return null;
 
+  const liveComposerInspection = composer ? getLiveInspection(composer.inspection) : null;
+
   return (
     <div className="dom-ai-root">
       <div
@@ -1043,10 +1053,10 @@ function App() {
           <FocusedAnnotationOverlay annotation={sortedAnnotations.find((item) => item.id === hoveredAnnotationId)} subtle />
         ) : null}
 
-        {composer ? (
+        {liveComposerInspection ? (
           <div
             className="dom-ai-highlight"
-            style={getHighlightStyle(composer.inspection)}
+            style={getHighlightStyle(liveComposerInspection)}
           />
         ) : null}
 
@@ -1070,14 +1080,14 @@ function App() {
           />
         ))}
 
-        {composer ? (
+        {composer && liveComposerInspection ? (
           <div
             className="dom-ai-composer-anchor"
             style={{
-              left: composer.inspection.documentRect.x,
-              top: composer.inspection.documentRect.y,
-              width: composer.inspection.documentRect.width,
-              height: composer.inspection.documentRect.height
+              left: liveComposerInspection.documentRect.x,
+              top: liveComposerInspection.documentRect.y,
+              width: liveComposerInspection.documentRect.width,
+              height: liveComposerInspection.documentRect.height
             }}
           />
         ) : null}
@@ -1138,11 +1148,44 @@ function AnnotationPin({
   onHoverChange: (hovered: boolean) => void;
 }) {
   const [isDismissed, setIsDismissed] = useState(false);
+  const [isCardOpen, setIsCardOpen] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
   const palette = getPinPalette(annotation.status);
   const position = getAnnotationPinPosition(annotation);
   const normalizedStatus = normalizeAnnotationStatus(annotation.status);
   const title = getAnnotationTitle(annotation);
   const statusOptions: AnnotationStatus[] = ["pending", "sent", "changed", "needs_work", "passed", "skipped"];
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, []);
+
+  const openCard = useCallback(() => {
+    clearCloseTimer();
+    setIsDismissed(false);
+    setIsCardOpen(true);
+    onHoverChange(true);
+  }, [clearCloseTimer, onHoverChange]);
+
+  const closeCard = useCallback(() => {
+    clearCloseTimer();
+    setIsCardOpen(false);
+    onHoverChange(false);
+  }, [clearCloseTimer, onHoverChange]);
+
+  const scheduleCloseCard = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setIsCardOpen(false);
+      onHoverChange(false);
+      closeTimerRef.current = null;
+    }, 180);
+  }, [clearCloseTimer, onHoverChange]);
+
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
+
   const style = {
     left: position.left,
     top: position.top,
@@ -1154,17 +1197,15 @@ function AnnotationPin({
 
   return (
     <div
-      className={`dom-ai-pin dom-ai-pin-placement-${position.placement} dom-ai-pin-card-side-${position.cardSide} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${editing ? "dom-ai-pin-editing" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""}`}
+      className={`dom-ai-pin dom-ai-pin-placement-${position.placement} dom-ai-pin-card-side-${position.cardSide} dom-ai-interactive ${focused ? "dom-ai-pin-focused" : ""} ${editing ? "dom-ai-pin-editing" : ""} ${isDismissed ? "dom-ai-pin-dismissed" : ""} ${isCardOpen ? "dom-ai-pin-card-open" : ""}`}
       style={style}
-      onMouseEnter={() => {
-        setIsDismissed(false);
-        onHoverChange(true);
+      onMouseEnter={openCard}
+      onMouseLeave={scheduleCloseCard}
+      onFocus={openCard}
+      onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+        closeCard();
       }}
-      onMouseLeave={() => {
-        onHoverChange(false);
-      }}
-      onFocus={() => onHoverChange(true)}
-      onBlur={() => onHoverChange(false)}
     >
       <button
         type="button"
@@ -1172,13 +1213,17 @@ function AnnotationPin({
         aria-label={`查看第 ${index + 1} 条评论`}
         onClick={(event) => {
           event.stopPropagation();
-          setIsDismissed(false);
-          onHoverChange(true);
+          openCard();
         }}
       >
         <span className="dom-ai-pin-number">{index + 1}</span>
       </button>
-      <section className="dom-ai-pin-card" aria-label={`第 ${index + 1} 条评论`}>
+      <section
+        className="dom-ai-pin-card"
+        aria-label={`第 ${index + 1} 条评论`}
+        onMouseEnter={openCard}
+        onMouseLeave={scheduleCloseCard}
+      >
         <header className="dom-ai-pin-card-header">
           <span className="dom-ai-pin-card-index">{index + 1}</span>
           <div className="dom-ai-pin-card-title">
@@ -1191,8 +1236,9 @@ function AnnotationPin({
             aria-label="收起评论"
             onClick={(event) => {
               event.stopPropagation();
+              clearCloseTimer();
               setIsDismissed(true);
-              onHoverChange(false);
+              closeCard();
             }}
           >
             <X size={18} />
@@ -1206,7 +1252,7 @@ function AnnotationPin({
             </span>
             <span>{formatRelativeTime(annotation.updatedAt)}</span>
           </div>
-          <p>{annotation.feedback.comment}</p>
+          {getVisibleAnnotationComment(annotation) ? <p>{getVisibleAnnotationComment(annotation)}</p> : null}
           {annotation.styleChanges?.length ? (
             <div className="dom-ai-pin-style-changes" aria-label="样式变更">
               {annotation.styleChanges.slice(0, 3).map((change) => (
@@ -1600,7 +1646,7 @@ function Composer({
   onSaved: () => void;
   onDeleted: () => void;
 }) {
-  const [comment, setComment] = useState(state.editingAnnotation?.feedback.comment ?? "");
+  const [comment, setComment] = useState(state.editingAnnotation ? getVisibleAnnotationComment(state.editingAnnotation) : "");
   const [severity, setSeverity] = useState<FeedbackSeverity>(state.editingAnnotation?.feedback.severity ?? "important");
   const [references, setReferences] = useState<AnnotationReference[]>(state.editingAnnotation?.references ?? []);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1680,7 +1726,7 @@ function Composer({
   const save = useCallback(async () => {
     if (!canSave) return;
     const trimmedComment = comment.trim();
-    const feedbackComment = trimmedComment || formatStyleChangeComment(styleChanges);
+    const feedbackComment = trimmedComment;
     const savedStyleChanges = styleChanges.length ? styleChanges : undefined;
 
     if (state.editingAnnotation) {
@@ -1752,7 +1798,7 @@ function Composer({
 
   useEffect(() => {
     completedRef.current = false;
-    setComment(state.editingAnnotation?.feedback.comment ?? "");
+    setComment(state.editingAnnotation ? getVisibleAnnotationComment(state.editingAnnotation) : "");
     setSeverity(state.editingAnnotation?.feedback.severity ?? "important");
     setReferences(state.editingAnnotation?.references ?? []);
     setConfirmDelete(false);
@@ -1928,6 +1974,7 @@ function Composer({
             resetKey={styleEditorResetKey}
             remoteTarget={remoteStyleTarget}
             fontFamilies={state.fontFamilies}
+            baselineStyleChanges={state.editingAnnotation?.styleChanges}
             onChanged={refreshLiveInspection}
             onDirtyChange={setHasStyleChanges}
             onStyleChangesChange={setStyleChanges}
@@ -2556,11 +2603,53 @@ function MeasurementPair({ pair, removable, onRemove }: { pair: PinnedMeasuremen
   );
 }
 
+function applySavedStyleChangesToTarget(
+  changes: AnnotationStyleChange[] | undefined,
+  editableElement: HTMLElement | null,
+  remoteTarget: RemoteStyleTarget | undefined,
+  sendRemoteStyleMessage: (message: ContentMessage) => void,
+  inspection: HoverInspection
+) {
+  if (!changes?.length) return;
+
+  for (const change of changes) {
+    const editableProperty = getEditableStylePropertyForChange(change.property);
+    if (!editableProperty) continue;
+
+    if (editableProperty === "textContent") {
+      if (editableElement && isTextContentEditable(inspection)) {
+        setEditableElementText(editableElement, change.value);
+      } else if (remoteTarget) {
+        sendRemoteStyleMessage({
+          type: "DOM_AI_REMOTE_TEXT_APPLY",
+          frameId: remoteTarget.frameId,
+          selector: remoteTarget.selector,
+          value: change.value
+        });
+      }
+      continue;
+    }
+
+    if (editableElement) {
+      applyEditableStyleValue(editableElement, change.property, change.value);
+    } else if (remoteTarget) {
+      sendRemoteStyleMessage({
+        type: "DOM_AI_REMOTE_STYLE_APPLY",
+        frameId: remoteTarget.frameId,
+        selector: remoteTarget.selector,
+        cssProperty: change.property,
+        value: change.value
+      });
+    }
+  }
+}
+
 const StyleEditor = React.forwardRef<StyleEditorHandle, {
   inspection: HoverInspection;
   resetKey: string;
   remoteTarget?: RemoteStyleTarget;
   fontFamilies?: string[];
+  baselineStyleChanges?: AnnotationStyleChange[];
   onChanged: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onStyleChangesChange: (changes: AnnotationStyleChange[]) => void;
@@ -2571,14 +2660,15 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   resetKey,
   remoteTarget,
   fontFamilies,
+  baselineStyleChanges,
   onChanged,
   onDirtyChange,
   onStyleChangesChange,
   onScrubActiveChange,
   shouldRevertOnDispose
 }, ref) {
-  const [values, setValues] = useState<EditableStyleValues>(() => createEditableStyleValues(inspection));
-  const [baselineValues, setBaselineValues] = useState<EditableStyleValues>(() => createEditableStyleValues(inspection));
+  const [values, setValues] = useState<EditableStyleValues>(() => createEditableStyleValuesWithChanges(inspection, baselineStyleChanges));
+  const [baselineValues, setBaselineValues] = useState<EditableStyleValues>(() => createEditableStyleBaselineValues(inspection, baselineStyleChanges));
   const [linkedBoxValues, setLinkedBoxValues] = useState({
     size: false,
     marginBlock: false,
@@ -2589,6 +2679,15 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   const [activeNumericScrub, setActiveNumericScrub] = useState<ActiveNumericScrub>(null);
   const editableElement = inspection.element instanceof HTMLElement ? inspection.element : null;
   const inlineBaselineRef = useRef<InlineStyleSnapshot>({});
+  const savedTextContentRef = useRef(inspection.textContent);
+  const baselineOverrideProperties = useMemo(() => {
+    const properties = new Set<keyof EditableStyleValues>();
+    baselineStyleChanges?.forEach((change) => {
+      const property = getEditableStylePropertyForChange(change.property);
+      if (property) properties.add(property);
+    });
+    return properties;
+  }, [baselineStyleChanges]);
   const sendRemoteStyleMessage = useCallback((message: ContentMessage) => {
     if (!remoteTarget) return;
     void chrome.runtime.sendMessage({
@@ -2604,9 +2703,10 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   const directionalLayoutVisible = isGridLayout || isFlexLayout;
 
   useEffect(() => {
-    const nextValues = createEditableStyleValues(inspection);
+    const nextValues = createEditableStyleValuesWithChanges(inspection, baselineStyleChanges);
+    const nextBaselineValues = createEditableStyleBaselineValues(inspection, baselineStyleChanges);
     setValues(nextValues);
-    setBaselineValues(nextValues);
+    setBaselineValues(nextBaselineValues);
     setLinkedBoxValues({
       size: false,
       marginBlock: false,
@@ -2615,10 +2715,19 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
       paddingInline: false
     });
     setActiveNumericScrub(null);
+    savedTextContentRef.current = inspection.textContent;
     inlineBaselineRef.current = editableElement
       ? captureInlineStyleSnapshot(editableElement)
       : remoteTarget?.inlineStyleSnapshot ?? {};
-  }, [editableElement, remoteTarget?.inlineStyleSnapshot, resetKey]);
+    applySavedStyleChangesToTarget(
+      baselineStyleChanges,
+      editableElement,
+      remoteTarget,
+      sendRemoteStyleMessage,
+      inspection
+    );
+    if (baselineStyleChanges?.length) window.requestAnimationFrame(onChanged);
+  }, [baselineStyleChanges, editableElement, remoteTarget?.inlineStyleSnapshot, resetKey]);
 
   const setStyleValue = useCallback((property: keyof EditableStyleValues, cssProperty: string, value: string) => {
     setValues((current) => ({ ...current, [property]: value }));
@@ -2639,24 +2748,40 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   }, [editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
 
   const resetStyleValue = useCallback((property: keyof EditableStyleValues, cssProperty: string) => {
+    const baselineValue = baselineValues[property];
+    const shouldApplySavedBaseline = baselineOverrideProperties.has(property);
     if (editableElement) {
-      restoreInlineStyle(editableElement, cssProperty, inlineBaselineRef.current[cssProperty]);
+      if (shouldApplySavedBaseline) {
+        applyEditableStyleValue(editableElement, cssProperty, baselineValue);
+      } else {
+        restoreInlineStyle(editableElement, cssProperty, inlineBaselineRef.current[cssProperty]);
+      }
       const nextInspection = getElementInspection(editableElement);
       setValues(createEditableStyleValues(nextInspection));
     } else if (remoteTarget) {
-      sendRemoteStyleMessage({
-        type: "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY",
-        frameId: remoteTarget.frameId,
-        selector: remoteTarget.selector,
-        cssProperty,
-        snapshot: inlineBaselineRef.current[cssProperty] ?? null
-      });
-      setValues((current) => ({ ...current, [property]: baselineValues[property] }));
+      if (shouldApplySavedBaseline) {
+        sendRemoteStyleMessage({
+          type: "DOM_AI_REMOTE_STYLE_APPLY",
+          frameId: remoteTarget.frameId,
+          selector: remoteTarget.selector,
+          cssProperty,
+          value: baselineValue
+        });
+      } else {
+        sendRemoteStyleMessage({
+          type: "DOM_AI_REMOTE_STYLE_RESTORE_PROPERTY",
+          frameId: remoteTarget.frameId,
+          selector: remoteTarget.selector,
+          cssProperty,
+          snapshot: inlineBaselineRef.current[cssProperty] ?? null
+        });
+      }
+      setValues((current) => ({ ...current, [property]: baselineValue }));
     } else {
       return;
     }
     window.requestAnimationFrame(onChanged);
-  }, [baselineValues, editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
+  }, [baselineOverrideProperties, baselineValues, editableElement, onChanged, remoteTarget, sendRemoteStyleMessage]);
 
   const setTextContentValue = useCallback((value: string) => {
     setValues((current) => ({ ...current, textContent: value }));
@@ -2823,7 +2948,7 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   const restoreCurrentTargetStyles = useCallback(() => {
     if (editableElement) {
       restoreInlineStyleSnapshot(editableElement, inlineBaselineRef.current);
-      if (isTextContentEditable(inspection)) setEditableElementText(editableElement, baselineValues.textContent);
+      if (isTextContentEditable(inspection)) setEditableElementText(editableElement, savedTextContentRef.current);
       return true;
     }
     if (remoteTarget) {
@@ -2832,12 +2957,12 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
         frameId: remoteTarget.frameId,
         selector: remoteTarget.selector,
         inlineStyleSnapshot: inlineBaselineRef.current,
-        textContent: baselineValues.textContent
+        textContent: savedTextContentRef.current
       });
       return true;
     }
     return false;
-  }, [baselineValues.textContent, editableElement, inspection, remoteTarget, sendRemoteStyleMessage]);
+  }, [editableElement, inspection, remoteTarget, sendRemoteStyleMessage]);
   const restoreOnDisposeRef = useRef(restoreCurrentTargetStyles);
   const shouldRevertOnDisposeRef = useRef(shouldRevertOnDispose);
 
@@ -2964,6 +3089,7 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
                 value={values.fontWeight}
                 options={FONT_WEIGHT_OPTIONS}
                 disabled={disabled}
+                compact
                 onChange={(value) => setStyleValue("fontWeight", "font-weight", value)}
                 onReset={resetIfEdited("fontWeight", "font-weight")}
               />
@@ -3400,6 +3526,7 @@ function TextSelectStyleRow({
   value,
   options,
   disabled,
+  compact,
   onChange,
   onReset
 }: {
@@ -3407,6 +3534,7 @@ function TextSelectStyleRow({
   value: string;
   options: Array<string | SelectStyleOption>;
   disabled: boolean;
+  compact?: boolean;
   onChange: (value: string) => void;
   onReset?: () => void;
 }) {
@@ -3517,7 +3645,7 @@ function TextSelectStyleRow({
 
   return (
     <StyleRow label={label} onReset={onReset}>
-      <div className="dom-ai-select-control" ref={containerRef}>
+      <div className={`dom-ai-select-control ${compact ? "dom-ai-select-control-compact" : ""}`} ref={containerRef}>
         <button
           ref={triggerRef}
           type="button"
@@ -4531,27 +4659,37 @@ function notifyFrameHoverActive(context: PageContext, lastSignalRef: React.Mutab
 }
 
 function isAnnotationForCurrentDocument(annotation: DomAnnotation, context: PageContext): boolean {
-  if (!annotation.context) return annotation.url === location.href;
+  return shouldHandleAnnotationAction(annotation, context);
+}
 
-  const sameContextUrl = normalizeContextUrl(annotation.context.url) === normalizeContextUrl(context.url);
-  const sameAnnotationUrl = normalizeContextUrl(annotation.url) === normalizeContextUrl(context.url);
+function shouldHandleAnnotationAction(annotation: DomAnnotation, context: PageContext): boolean {
+  return shouldHandleTargetContext(annotation.context, annotation.url, context);
+}
 
-  if (
-    annotation.context.frameId !== undefined &&
-    context.frameId !== undefined &&
-    annotation.context.frameId === context.frameId &&
-    sameContextUrl
-  ) {
-    return true;
+function shouldHandleAnnotationReferenceAction(reference: AnnotationReference, context: PageContext): boolean {
+  return shouldHandleTargetContext(reference.context, reference.url, context);
+}
+
+function shouldHandleTargetContext(targetContext: PageContext | undefined, targetUrl: string, context: PageContext): boolean {
+  if (!targetContext) {
+    return !isEmbeddedFrameWindow() && normalizeContextUrl(targetUrl) === normalizeContextUrl(location.href);
   }
 
-  if (annotation.context.kind === "wujie" || annotation.context.kind === "micro-app") {
-    const annotationTopUrl = annotation.context.topUrl || annotation.context.url;
+  if (targetContext.kind === "wujie" || targetContext.kind === "micro-app") {
+    const targetTopUrl = targetContext.topUrl || targetContext.url;
     const currentTopUrl = context.topUrl || context.url;
-    return normalizeContextUrl(annotationTopUrl) === normalizeContextUrl(currentTopUrl);
+    return !isEmbeddedFrameWindow() && normalizeContextUrl(targetTopUrl) === normalizeContextUrl(currentTopUrl);
   }
 
-  return sameContextUrl || sameAnnotationUrl;
+  const targetFrameId = targetContext.frameId ?? (targetContext.kind === "top" ? 0 : undefined);
+  const currentFrameId = context.frameId ?? (context.kind === "top" ? 0 : undefined);
+
+  if (targetFrameId !== undefined || currentFrameId !== undefined) {
+    return targetFrameId === currentFrameId
+      && normalizeContextUrl(targetContext.url) === normalizeContextUrl(context.url);
+  }
+
+  return normalizeContextUrl(targetContext.url || targetUrl) === normalizeContextUrl(context.url);
 }
 
 function normalizeContextUrl(value: string | undefined): string {
