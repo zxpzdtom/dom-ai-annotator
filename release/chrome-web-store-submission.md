@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.4.zip`
-- Version: `0.3.4`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.5.zip`
+- Version: `0.3.5`
 
 ## Listing
 
@@ -81,6 +81,11 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.5 Review Notes
+
+- Fixes wujie micro-app annotation handoff when the child iframe is hosted inside an open shadow root.
+- Refines the in-page drag handle icon with a lighter six-dot grip for compact and expanded annotation editors.
 
 ## 0.3.4 Review Notes
 

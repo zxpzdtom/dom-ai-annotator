@@ -10,7 +10,6 @@ import {
   ChevronDown,
   Link2,
   MessageCircle,
-  Move,
   RotateCcw,
   Ruler,
   Settings2,
@@ -4561,7 +4560,9 @@ function StyleTuneIcon({ size }: { size: number }) {
 function CodexDragIcon() {
   return (
     <span className="dom-ai-codex-drag-icon" aria-hidden="true">
-      <Move size={14} strokeWidth={2.2} />
+      {Array.from({ length: 6 }, (_, index) => (
+        <i key={index} />
+      ))}
     </span>
   );
 }
