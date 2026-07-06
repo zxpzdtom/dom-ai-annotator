@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Link2,
   MessageCircle,
+  Move,
   RotateCcw,
   Ruler,
   Settings2,
@@ -1998,7 +1999,7 @@ function Composer({
             title="拖动评论面板"
             onPointerDown={startComposerDrag}
           >
-            <CodexGripDots />
+            <CodexDragIcon />
           </button>
           <button
             type="button"
@@ -2050,7 +2051,7 @@ function Composer({
             onPointerDown={startComposerDrag}
           >
             <span>{liveInspection.label}</span>
-            <CodexGripDots />
+            <CodexDragIcon />
           </div>
 
           <StyleEditor
@@ -4557,12 +4558,10 @@ function StyleTuneIcon({ size }: { size: number }) {
   return <Settings2 aria-hidden="true" size={size} strokeWidth={2.15} />;
 }
 
-function CodexGripDots() {
+function CodexDragIcon() {
   return (
-    <span className="dom-ai-codex-grip" aria-hidden="true">
-      {Array.from({ length: 6 }, (_, index) => (
-        <i key={index} />
-      ))}
+    <span className="dom-ai-codex-drag-icon" aria-hidden="true">
+      <Move size={14} strokeWidth={2.2} />
     </span>
   );
 }
@@ -5032,8 +5031,15 @@ function serializeHoverInspection(inspection: HoverInspection): SerializableHove
 
 function getIframeHostForMessageSource(source: MessageEventSource | null): HTMLIFrameElement | null {
   if (!source || typeof MessagePort !== "undefined" && source instanceof MessagePort) return null;
-  return Array.from(document.querySelectorAll("iframe"))
+  return getIframesDeep(document)
     .find((iframe) => iframe.contentWindow === source) ?? null;
+}
+
+function getIframesDeep(root: ParentNode | ShadowRoot): HTMLIFrameElement[] {
+  const iframes = Array.from(root.querySelectorAll("iframe"));
+  const shadowIframes = Array.from(root.querySelectorAll("*"))
+    .flatMap((element) => element.shadowRoot ? getIframesDeep(element.shadowRoot) : []);
+  return [...iframes, ...shadowIframes];
 }
 
 function createTopComposerStateFromIframeSelection(payload: IframeSelectionPayload, frameHost: HTMLIFrameElement): ComposerState {

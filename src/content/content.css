@@ -424,30 +424,17 @@ textarea {
   white-space: nowrap;
 }
 
-.dom-ai-target-strip svg {
-  flex: 0 0 auto;
-  color: #9aa3af;
-}
-
-.dom-ai-codex-grip {
+.dom-ai-codex-drag-icon {
   display: grid;
-  width: 14px;
+  width: 18px;
   height: 18px;
   flex: 0 0 auto;
-  grid-template-columns: repeat(2, 3px);
-  grid-auto-rows: 3px;
-  justify-content: center;
-  align-content: center;
-  gap: 3px 4px;
-  color: #9aa3af;
+  place-items: center;
+  color: #8f99a6;
 }
 
-.dom-ai-codex-grip i {
+.dom-ai-codex-drag-icon svg {
   display: block;
-  width: 3px;
-  height: 3px;
-  border-radius: 999px;
-  background: currentColor;
 }
 
 .dom-ai-expanded-footer {
