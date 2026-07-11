@@ -2,56 +2,95 @@ import { isExcludedUrl } from "./shared/excludedUrls";
 import type { MonitorEvent, MonitorEventKind, PageContext, RuntimeMessage } from "./shared/types";
 
 const DEBUG_STORAGE_PREFIX = "domAiDebugEvents:";
+const PANEL_ACTIVATION_PREFIX = "domAiPanelActivation:";
 const MAX_DEBUG_EVENTS = 600;
 const PANEL_HEARTBEAT_TIMEOUT_MS = 2500;
 const panelHeartbeats = new Map<number, number>();
+const openPanelTabs = new Set<number>();
+const modernSidePanel = chrome.sidePanel as typeof chrome.sidePanel & {
+  close?: (options: { tabId?: number; windowId?: number }) => Promise<void>;
+  onOpened?: { addListener: (listener: (info: { tabId?: number; windowId: number; path: string }) => void) => void };
+  onClosed?: { addListener: (listener: (info: { tabId?: number; windowId: number; path: string }) => void) => void };
+};
+
+// The panel is opened explicitly below from a user gesture. Keeping Chrome's
+// automatic action behavior enabled can restore it during page navigation.
+void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
 
 chrome.runtime.onInstalled.addListener(() => {
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-  void syncAllTabsSidePanel();
+  void resetAllTabsSidePanel();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void syncAllTabsSidePanel();
-});
-
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-  void syncTabSidePanel(tabId);
+  void resetAllTabsSidePanel();
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
-  if (tab.id) void syncTabSidePanel(tab.id, tab.url);
+  if (tab.id) void prepareTabSidePanel(tab.id, tab.url);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === "complete") {
-    void syncTabSidePanel(tabId, tab.url);
+    void prepareTabSidePanel(tabId, tab.url);
   }
 });
 
-chrome.tabs.onReplaced.addListener((addedTabId) => {
-  void syncTabSidePanel(addedTabId);
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  void transferPanelActivation(removedTabId, addedTabId);
 });
 
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  openPanelTabs.delete(tabId);
+  panelHeartbeats.delete(tabId);
+  void removePanelActivation(tabId);
+});
+
+chrome.action.onClicked.addListener((tab) => {
   if (!tab.id) return;
-  const enabled = await syncTabSidePanel(tab.id, tab.url);
-  if (!enabled) return;
-  await chrome.sidePanel.open({ tabId: tab.id });
-  void sendContentMessage(tab.id, { type: "DOM_AI_REFRESH_PINS" });
+  if (isExcludedUrl(tab.url ?? "")) return;
+
+  if (isTabPanelOpen(tab.id)) {
+    closeTabSidePanel(tab.id, tab.windowId);
+    return;
+  }
+
+  // open() must run synchronously inside the action click so Chrome preserves
+  // the user gesture. Configuration is prepared when the tab is created.
+  const openPanel = chrome.sidePanel.open({ tabId: tab.id });
+  openPanelTabs.add(tab.id);
+  panelHeartbeats.set(tab.id, Date.now());
+  void markTabPanelActivated(tab.id);
+  void openPanel
+    .then(() => handlePanelOpened(tab.id!))
+    .catch(() => handlePanelClosed(tab.id!));
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
   const tab = await getActiveTab();
   if (!tab?.id) return;
-  const enabled = await syncTabSidePanel(tab.id, tab.url);
-  if (!enabled) return;
+  if (isExcludedUrl(tab.url ?? "")) return;
 
   if (command === "start-picking") {
+    openPanelTabs.add(tab.id);
+    panelHeartbeats.set(tab.id, Date.now());
+    void markTabPanelActivated(tab.id);
     await chrome.sidePanel.open({ tabId: tab.id });
+    await handlePanelOpened(tab.id);
     await sendContentMessage(tab.id, { type: "DOM_AI_START_PICKING" });
   }
 });
+
+if (modernSidePanel.onOpened) {
+  modernSidePanel.onOpened.addListener((info) => {
+    if (info.tabId) void handlePanelOpened(info.tabId);
+  });
+}
+
+if (modernSidePanel.onClosed) {
+  modernSidePanel.onClosed.addListener((info) => {
+    if (info.tabId) void handlePanelClosed(info.tabId);
+  });
+}
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === "DOM_AI_GET_FRAME_CONTEXT") {
@@ -65,16 +104,6 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
       parentFrameId: (sender as chrome.runtime.MessageSender & { parentFrameId?: number }).parentFrameId
     };
     sendResponse(context);
-    return;
-  }
-
-  if (message.type === "DOM_AI_OPEN_SIDE_PANEL") {
-    const tabId = sender.tab?.id;
-    const url = sender.tab?.url ?? "";
-    if (!tabId) return;
-    void syncTabSidePanel(tabId, url).then((enabled) => {
-      if (enabled) void chrome.sidePanel.open({ tabId });
-    });
     return;
   }
 
@@ -142,22 +171,30 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   }
 
   if (message.type === "DOM_AI_PANEL_HEARTBEAT") {
-    panelHeartbeats.set(message.tabId, Date.now());
-    sendResponse({ active: true });
-    return;
+    void isTabPanelActivated(message.tabId).then((active) => {
+      if (active) {
+        panelHeartbeats.set(message.tabId, Date.now());
+        openPanelTabs.add(message.tabId);
+      } else {
+        panelHeartbeats.delete(message.tabId);
+        openPanelTabs.delete(message.tabId);
+      }
+      sendResponse({ active });
+    });
+    return true;
   }
 
   if (message.type === "DOM_AI_PANEL_CLOSED") {
-    panelHeartbeats.delete(message.tabId);
-    void clearDebugEvents(message.tabId);
-    sendResponse({ active: false });
-    return;
+    void handlePanelClosed(message.tabId).then(() => {
+      sendResponse({ active: false });
+    });
+    return true;
   }
 
   if (message.type === "DOM_AI_GET_PANEL_STATE") {
     const tabId = message.tabId ?? sender.tab?.id ?? 0;
-    sendResponse({ active: isPanelActive(tabId) });
-    return;
+    void isTabPanelActivated(tabId).then((active) => sendResponse({ active }));
+    return true;
   }
 });
 
@@ -166,26 +203,28 @@ async function getActiveTab() {
   return tab;
 }
 
-async function syncActiveTabSidePanel() {
-  const tab = await getActiveTab();
-  if (tab?.id) await syncTabSidePanel(tab.id, tab.url);
-}
-
-async function syncAllTabsSidePanel() {
+async function resetAllTabsSidePanel() {
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
+  await clearPanelActivations();
+  openPanelTabs.clear();
+  panelHeartbeats.clear();
   const tabs = await chrome.tabs.query({});
-  await Promise.all(tabs.map((tab) => (tab.id ? syncTabSidePanel(tab.id, tab.url) : Promise.resolve(false))));
-  await syncActiveTabSidePanel();
+  await Promise.all(tabs.map((tab) => (tab.id ? prepareTabSidePanel(tab.id, tab.url) : Promise.resolve(false))));
 }
 
-async function syncTabSidePanel(tabId: number, url?: string): Promise<boolean> {
+async function prepareTabSidePanel(tabId: number, url?: string) {
+  await chrome.action.disable(tabId);
+  const enabled = await configureTabSidePanel(tabId, url);
+  if (enabled) await chrome.action.enable(tabId);
+  return enabled;
+}
+
+async function configureTabSidePanel(tabId: number, url?: string): Promise<boolean> {
   const resolvedUrl = url ?? (await chrome.tabs.get(tabId).catch(() => undefined))?.url ?? "";
   const enabled = !isExcludedUrl(resolvedUrl);
 
   if (!enabled) {
-    await chrome.sidePanel.setOptions({
-      tabId,
-      enabled: false
-    });
+    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => undefined);
     return false;
   }
 
@@ -195,6 +234,107 @@ async function syncTabSidePanel(tabId: number, url?: string): Promise<boolean> {
     enabled: true
   });
   return true;
+}
+
+async function deactivateTabSidePanel(tabId: number) {
+  openPanelTabs.delete(tabId);
+  panelHeartbeats.delete(tabId);
+  await removePanelActivation(tabId);
+}
+
+async function markTabPanelActivated(tabId: number) {
+  await chrome.storage.session.set({ [panelActivationKey(tabId)]: true });
+}
+
+function isTabPanelOpen(tabId: number) {
+  if (openPanelTabs.has(tabId)) return true;
+  const lastSeen = panelHeartbeats.get(tabId) ?? 0;
+  return Date.now() - lastSeen <= PANEL_HEARTBEAT_TIMEOUT_MS;
+}
+
+function closeTabSidePanel(tabId: number, windowId?: number) {
+  openPanelTabs.delete(tabId);
+  panelHeartbeats.delete(tabId);
+
+  if (modernSidePanel.close) {
+    void modernSidePanel.close({ tabId })
+      .catch(async (error) => {
+        if (windowId === undefined || !modernSidePanel.close) throw error;
+        await modernSidePanel.close({ windowId });
+      })
+      .then(() => handlePanelClosed(tabId))
+      .catch(() => {
+        openPanelTabs.add(tabId);
+        panelHeartbeats.set(tabId, Date.now());
+      });
+    return;
+  }
+
+  // Chrome <141 fallback: disabling an open tab-specific panel closes it.
+  void chrome.sidePanel.setOptions({ tabId, enabled: false }).then(() => (
+    configureTabSidePanel(tabId)
+  )).then(() => handlePanelClosed(tabId)).catch(() => {
+    openPanelTabs.add(tabId);
+    panelHeartbeats.set(tabId, Date.now());
+  });
+}
+
+async function handlePanelOpened(tabId: number) {
+  openPanelTabs.add(tabId);
+  panelHeartbeats.set(tabId, Date.now());
+  await markTabPanelActivated(tabId);
+  await sendContentMessage(tabId, { type: "DOM_AI_REFRESH_PINS" }).catch(() => undefined);
+}
+
+async function handlePanelClosed(tabId: number) {
+  await Promise.all([
+    hideTabContentUi(tabId),
+    deactivateTabSidePanel(tabId),
+    clearDebugEvents(tabId)
+  ]);
+}
+
+async function hideTabContentUi(tabId: number) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      window.dispatchEvent(new CustomEvent("dom-ai-panel-visibility", {
+        detail: { active: false }
+      }));
+    }
+  }).catch(() => undefined);
+}
+
+function panelActivationKey(tabId: number) {
+  return `${PANEL_ACTIVATION_PREFIX}${tabId}`;
+}
+
+async function isTabPanelActivated(tabId: number) {
+  if (!tabId) return false;
+  const key = panelActivationKey(tabId);
+  const data = await chrome.storage.session.get(key);
+  return data[key] === true;
+}
+
+async function removePanelActivation(tabId: number) {
+  if (!tabId) return;
+  await chrome.storage.session.remove(panelActivationKey(tabId));
+}
+
+async function transferPanelActivation(removedTabId: number, addedTabId: number) {
+  const active = await isTabPanelActivated(removedTabId);
+  await removePanelActivation(removedTabId);
+  openPanelTabs.delete(removedTabId);
+  panelHeartbeats.delete(removedTabId);
+  const tab = await chrome.tabs.get(addedTabId).catch(() => undefined);
+  await prepareTabSidePanel(addedTabId, tab?.url);
+  if (active) await markTabPanelActivated(addedTabId);
+}
+
+async function clearPanelActivations() {
+  const data = await chrome.storage.session.get(null);
+  const keys = Object.keys(data).filter((key) => key.startsWith(PANEL_ACTIVATION_PREFIX));
+  if (keys.length) await chrome.storage.session.remove(keys);
 }
 
 async function sendContentMessage(tabId: number, message: unknown) {
@@ -255,13 +395,13 @@ async function writeDebugEvents(tabId: number, events: MonitorEvent[]) {
 }
 
 async function appendDebugEvent(tabId: number, event: MonitorEvent) {
-  if (!isPanelActive(tabId)) return;
+  if (!await isPanelActive(tabId)) return;
   const current = await getDebugEvents(tabId);
   await writeDebugEvents(tabId, [event, ...current.filter((item) => item.id !== event.id)]);
 }
 
 async function setDebugEventsForKind(tabId: number, kind: MonitorEventKind, events: MonitorEvent[]) {
-  if (!isPanelActive(tabId)) return;
+  if (!await isPanelActive(tabId)) return;
   const current = await getDebugEvents(tabId);
   const next = [
     ...events,
@@ -283,8 +423,9 @@ function notifyDebugEventsChanged(tabId: number) {
   void chrome.tabs.sendMessage(tabId, { type: "DOM_AI_DEBUG_EVENTS_CHANGED" }).catch(() => undefined);
 }
 
-function isPanelActive(tabId: number) {
+async function isPanelActive(tabId: number) {
   if (!tabId) return false;
+  if (!await isTabPanelActivated(tabId)) return false;
   const lastSeen = panelHeartbeats.get(tabId) ?? 0;
   if (Date.now() - lastSeen <= PANEL_HEARTBEAT_TIMEOUT_MS) return true;
   panelHeartbeats.delete(tabId);

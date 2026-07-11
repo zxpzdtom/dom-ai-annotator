@@ -1,4 +1,5 @@
 import type { AnnotationDraft, PageContext } from "../shared/types";
+import { getEffectiveBorderColor } from "./styleModel";
 
 const STYLE_PROPS = [
   "display",
@@ -185,7 +186,9 @@ function getXPathWithinRoot(element: Element): string {
 
 function getComputedStyleSnapshot(element: Element): Record<string, string> {
   const styles = window.getComputedStyle(element);
-  return Object.fromEntries(STYLE_PROPS.map((prop) => [prop, styles.getPropertyValue(toKebab(prop)) || styles.getPropertyValue(prop)]));
+  const snapshot = Object.fromEntries(STYLE_PROPS.map((prop) => [prop, styles.getPropertyValue(toKebab(prop)) || styles.getPropertyValue(prop)]));
+  snapshot.borderColor = getEffectiveBorderColor(styles);
+  return snapshot;
 }
 
 function normalizeText(text: string): string | undefined {

@@ -35,6 +35,7 @@ import {
   getEditableElementText,
   getEditableStyleChanges,
   getEditableStylePropertyForChange,
+  getEffectiveBorderColor,
   getElementStyleTitle,
   getNumericAdjusterConfigs,
   isLayoutStyleRelevant,
@@ -69,6 +70,7 @@ import { deleteAnnotation, getAnnotations, saveAnnotation, subscribeAnnotations,
 import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabels, statusLabels } from "../shared/status";
 import { getVisibleAnnotationComment } from "../shared/styleChanges";
 import { getAnnotationTitle } from "../shared/annotationDisplay";
+import { ReviewCursorIcon } from "../shared/ReviewCursorIcon";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 360;
@@ -194,6 +196,14 @@ let monitorEvents: MonitorEvent[] = [];
 let monitorBridgeInjected = false;
 let framePageContextPromise: Promise<PageContext> | null = null;
 
+type ParentFrameIdentity = Pick<PageContext, "hostSelector" | "hostUrl" | "framePath">;
+type FrameIdentityMessage = {
+  source?: string;
+  type?: "DOM_AI_IFRAME_CONTEXT_REQUEST" | "DOM_AI_IFRAME_CONTEXT_RESPONSE" | "DOM_AI_REVEAL_FRAME_CHAIN";
+  nonce?: string;
+  identity?: ParentFrameIdentity;
+};
+
 function getFallbackPageContext(): PageContext {
   return {
     kind: isEmbeddedFrameWindow() ? "iframe" : "top",
@@ -207,17 +217,90 @@ function getFallbackPageContext(): PageContext {
 async function getFramePageContext(): Promise<PageContext> {
   if (!framePageContextPromise) {
     framePageContextPromise = chrome.runtime.sendMessage({ type: "DOM_AI_GET_FRAME_CONTEXT" })
-      .then((context: PageContext | undefined) => ({
-        ...getFallbackPageContext(),
-        ...context,
-        kind: context?.kind ?? (isEmbeddedFrameWindow() ? "iframe" : "top"),
-        url: context?.url || location.href,
-        title: context?.title || document.title
-      }))
+      .then(async (context: PageContext | undefined) => {
+        const resolved: PageContext = {
+          ...getFallbackPageContext(),
+          ...context,
+          kind: context?.kind ?? (isEmbeddedFrameWindow() ? "iframe" : "top"),
+          url: context?.url || location.href,
+          title: context?.title || document.title
+        };
+        if (!isEmbeddedFrameWindow()) return resolved;
+        return { ...resolved, ...await requestParentFrameIdentity() };
+      })
       .catch(() => getFallbackPageContext());
   }
   return framePageContextPromise;
 }
+
+function requestParentFrameIdentity(): Promise<ParentFrameIdentity> {
+  if (!isEmbeddedFrameWindow()) return Promise.resolve({});
+
+  return new Promise((resolve) => {
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const retryDelays = [0, 100, 300, 700];
+    const timers: number[] = [];
+    let settled = false;
+
+    const finish = (identity: ParentFrameIdentity = {}) => {
+      if (settled) return;
+      settled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener("message", onResponse);
+      resolve(identity);
+    };
+    const onResponse = (event: MessageEvent) => {
+      if (event.source !== window.parent) return;
+      const data = event.data as FrameIdentityMessage;
+      if (data?.source !== "DOM_AI_ANNOTATOR" || data.type !== "DOM_AI_IFRAME_CONTEXT_RESPONSE" || data.nonce !== nonce) return;
+      finish(data.identity);
+    };
+
+    window.addEventListener("message", onResponse);
+    for (const delayMs of retryDelays) {
+      timers.push(window.setTimeout(() => {
+        window.parent.postMessage({
+          source: "DOM_AI_ANNOTATOR",
+          type: "DOM_AI_IFRAME_CONTEXT_REQUEST",
+          nonce
+        } satisfies FrameIdentityMessage, "*");
+      }, delayMs));
+    }
+    timers.push(window.setTimeout(() => finish(), 1400));
+  });
+}
+
+window.addEventListener("message", (event) => {
+  const data = event.data as FrameIdentityMessage;
+  if (data?.source !== "DOM_AI_ANNOTATOR" || data.type !== "DOM_AI_IFRAME_CONTEXT_REQUEST" || !data.nonce) return;
+  const frameHost = getIframeHostForMessageSource(event.source);
+  if (!frameHost || !event.source) return;
+
+  void getFramePageContext().then((parentContext) => {
+    const hostSelector = getCssSelector(frameHost);
+    const hostUrl = frameHost.getAttribute("src") || frameHost.src || undefined;
+    (event.source as Window).postMessage({
+      source: "DOM_AI_ANNOTATOR",
+      type: "DOM_AI_IFRAME_CONTEXT_RESPONSE",
+      nonce: data.nonce,
+      identity: {
+        hostSelector,
+        hostUrl,
+        framePath: [...(parentContext.framePath ?? []), hostSelector]
+      }
+    } satisfies FrameIdentityMessage, "*");
+  });
+});
+
+window.addEventListener("message", (event) => {
+  const data = event.data as FrameIdentityMessage;
+  if (data?.source !== "DOM_AI_ANNOTATOR" || data.type !== "DOM_AI_REVEAL_FRAME_CHAIN") return;
+  const frameHost = getIframeHostForMessageSource(event.source);
+  if (!frameHost) return;
+
+  scrollElementIntoView(frameHost);
+  requestContainingFrameReveal();
+});
 
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
@@ -354,11 +437,13 @@ function App() {
   const [toolbarDismissed, setToolbarDismissed] = useState(false);
   const showFrameToolbar = !isEmbeddedFrameWindow();
   const focusTimerRef = useRef<number | null>(null);
+  const editorOpenRequestRef = useRef(0);
   const lastFrameHoverSignalRef = useRef(0);
   const lastChildFrameHoverAtRef = useRef(0);
   const lastIframeEscapeForwardedAtRef = useRef(0);
 
   const clearTransientUi = useCallback(() => {
+    editorOpenRequestRef.current += 1;
     setPicking(false);
     setMeasuring(false);
     setHoverInspection(null);
@@ -416,10 +501,12 @@ function App() {
   }, [pageContext]);
 
   useEffect(() => {
-    if (panelActive) void refreshAnnotations();
-  }, [panelActive, refreshAnnotations]);
+    if (!panelActive) {
+      setAllAnnotations([]);
+      setAnnotations([]);
+      return;
+    }
 
-  useEffect(() => {
     void refreshAnnotations();
     const timers = INITIAL_PIN_REFRESH_DELAYS.map((delayMs) =>
       window.setTimeout(() => void refreshAnnotations(), delayMs)
@@ -432,13 +519,14 @@ function App() {
       window.removeEventListener("load", onLoad);
       unsubscribe();
     };
-  }, [refreshAnnotations]);
+  }, [panelActive, refreshAnnotations]);
 
   useEffect(() => {
+    if (!panelActive) return;
     for (const annotation of annotations) {
       applySavedAnnotationStyleChanges(annotation);
     }
-  }, [annotations]);
+  }, [annotations, panelActive]);
 
   useEffect(() => {
     let frame = 0;
@@ -570,8 +658,9 @@ function App() {
 
       event.stopPropagation();
       const composerState = createTopComposerStateFromIframeSelection(data.payload, frameHost);
+      const editorRequest = ++editorOpenRequestRef.current;
       setPanelVisible(true);
-      setComposer(composerState);
+      setComposer(null);
       setPicking(false);
       setReferencePickingLabel(null);
       setResumePickingAfterComposer(false);
@@ -580,6 +669,13 @@ function App() {
       setMeasureHover(null);
       setMeasurePaused(false);
       setHoverInspection(null);
+      if (data.payload.editingAnnotation) {
+        void scrollToDocumentRectAndWait(composerState.inspection.documentRect).then(() => {
+          if (editorOpenRequestRef.current === editorRequest) setComposer(composerState);
+        });
+      } else {
+        setComposer(composerState);
+      }
       void chrome.runtime.sendMessage({
         type: "DOM_AI_BROADCAST_CONTENT_MESSAGE",
         message: { type: "DOM_AI_IFRAME_SELECTION_ADOPTED", frameId: data.payload.context.frameId }
@@ -961,6 +1057,7 @@ function App() {
   );
 
   function closeComposer() {
+    editorOpenRequestRef.current += 1;
     setComposer(null);
     setReferencePickingLabel(null);
     if (resumePickingAfterComposer) setPicking(true);
@@ -992,11 +1089,20 @@ function App() {
   function openAnnotationEditor(id: string, items: DomAnnotation[]) {
     const annotation = items.find((item) => item.id === id);
     if (!annotation) return;
-    const inspection = getInspectionForAnnotation(annotation);
-    const draft = {
-      ...getAnnotationDraft(annotation),
-      pin: getAnnotationLivePinAnchor(annotation, inspection.documentRect)
-    };
+    const editorRequest = ++editorOpenRequestRef.current;
+    const initialInspection = getInspectionForAnnotation(annotation);
+
+    if (isEmbeddedFrameWindow()) {
+      setComposer(null);
+      setFocusedAnnotationId(null);
+      setHoveredAnnotationId(null);
+      void elevateIframeAnnotationEditor(annotation, initialInspection, pageContext).then((payload) => {
+        if (editorOpenRequestRef.current !== editorRequest) return;
+        postIframeSelectionToParent(payload);
+      });
+      return;
+    }
+
     (document.activeElement as HTMLElement | null)?.blur?.();
     setPicking(false);
     setReferencePickingLabel(null);
@@ -1009,11 +1115,23 @@ function App() {
     setFocusedAnnotationId(null);
     setFocusedReference(null);
     setHoveredAnnotationId(null);
-    focusAnnotation(id, items);
-    setComposer({
-      draft,
-      inspection,
-      editingAnnotation: annotation
+    setComposer(null);
+    const element = initialInspection.element;
+    const revealTarget = element
+      ? scrollElementIntoViewAndWait(element)
+      : scrollToDocumentRectAndWait(initialInspection.documentRect);
+    void revealTarget.then(() => {
+      if (editorOpenRequestRef.current !== editorRequest) return;
+      const inspection = element?.isConnected ? getElementInspection(element) : initialInspection;
+      setComposer({
+        draft: {
+          ...getAnnotationDraft(annotation),
+          context: pageContext,
+          pin: getAnnotationLivePinAnchor(annotation, inspection.documentRect)
+        },
+        inspection,
+        editingAnnotation: annotation
+      });
     });
   }
 
@@ -1488,14 +1606,6 @@ function FloatingToolBar({
         <X size={14} />
       </button>
     </div>
-  );
-}
-
-function ReviewCursorIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 20 20" fill="currentColor" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 3l7 17 2-7 7-2z" />
-    </svg>
   );
 }
 
@@ -2867,8 +2977,13 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
       } else {
         restoreInlineStyle(editableElement, cssProperty, inlineBaselineRef.current[cssProperty]);
       }
-      const nextInspection = getElementInspection(editableElement);
-      setValues(createEditableStyleValues(nextInspection));
+      // A single-property reset must not rebuild every editor value from
+      // computed styles. Some saved declarations (notably border-width when
+      // border-style is none) compute differently and would be dropped too.
+      const restoredValue = shouldApplySavedBaseline
+        ? baselineValue
+        : createEditableStyleValues(getElementInspection(editableElement))[property];
+      setValues((current) => ({ ...current, [property]: restoredValue }));
     } else if (remoteTarget) {
       if (shouldApplySavedBaseline) {
         sendRemoteStyleMessage({
@@ -2914,8 +3029,10 @@ const StyleEditor = React.forwardRef<StyleEditorHandle, {
   const resetTextContentValue = useCallback(() => {
     if (editableElement && isTextContentEditable(inspection)) {
       setEditableElementText(editableElement, baselineValues.textContent);
-      const nextInspection = getElementInspection(editableElement);
-      setValues(createEditableStyleValues(nextInspection));
+      setValues((current) => ({
+        ...current,
+        textContent: getEditableElementText(editableElement)
+      }));
     } else if (remoteTarget) {
       sendRemoteStyleMessage({
         type: "DOM_AI_REMOTE_TEXT_APPLY",
@@ -4694,6 +4811,14 @@ function getAnnotationElement(annotation: DomAnnotation): Element | null {
   });
 }
 
+function getExactAnnotationElement(annotation: DomAnnotation): Element | null {
+  return resolveExactStoredElement({
+    selector: annotation.selector,
+    xpath: annotation.xpath,
+    element: annotation.element
+  });
+}
+
 function getReferenceElement(reference: AnnotationReference): Element | null {
   return resolveStoredElement({
     selector: reference.selector,
@@ -4701,6 +4826,32 @@ function getReferenceElement(reference: AnnotationReference): Element | null {
     element: reference.element,
     rect: getSavedReferenceDocumentRect(reference)
   });
+}
+
+function getExactReferenceElement(reference: AnnotationReference): Element | null {
+  return resolveExactStoredElement({
+    selector: reference.selector,
+    xpath: reference.xpath,
+    element: reference.element
+  });
+}
+
+function resolveExactStoredElement(target: {
+  selector: string;
+  xpath?: string;
+  element: DomAnnotation["element"];
+}): Element | null {
+  const selectorCandidate = querySelectorDeep(target.selector);
+  if (selectorCandidate && elementMatchesStoredSummary(selectorCandidate, target.element)) {
+    return selectorCandidate;
+  }
+
+  const xpathCandidate = target.xpath ? queryXPathElement(target.xpath) : null;
+  if (xpathCandidate && elementMatchesStoredSummary(xpathCandidate, target.element)) {
+    return xpathCandidate;
+  }
+
+  return null;
 }
 
 function resolveStoredElement(target: {
@@ -4799,11 +4950,15 @@ function isAnnotationForCurrentPage(annotation: DomAnnotation, context: PageCont
 }
 
 function shouldHandleAnnotationAction(annotation: DomAnnotation, context: PageContext): boolean {
-  return shouldHandleTargetContext(annotation.context, annotation.url, context);
+  if (shouldHandleTargetContext(annotation.context, annotation.url, context)) return true;
+  return shouldUseLegacyIframeElementFallback(annotation.context, annotation.url, context)
+    && Boolean(getExactAnnotationElement(annotation));
 }
 
 function shouldHandleAnnotationReferenceAction(reference: AnnotationReference, context: PageContext): boolean {
-  return shouldHandleTargetContext(reference.context, reference.url, context);
+  if (shouldHandleTargetContext(reference.context, reference.url, context)) return true;
+  return shouldUseLegacyIframeElementFallback(reference.context, reference.url, context)
+    && Boolean(getExactReferenceElement(reference));
 }
 
 function shouldHandleTargetContext(targetContext: PageContext | undefined, targetUrl: string, context: PageContext): boolean {
@@ -4835,15 +4990,48 @@ function shouldHandleTargetContext(targetContext: PageContext | undefined, targe
   const targetFrameId = targetContext.frameId ?? (targetContext.kind === "top" ? 0 : undefined);
   const currentFrameId = context.frameId ?? (context.kind === "top" ? 0 : undefined);
 
-  if (targetFrameId !== undefined || currentFrameId !== undefined) {
-    if (targetFrameId === currentFrameId) return true;
+  if (targetContext.framePath?.length || context.framePath?.length) {
+    return Boolean(
+      targetContext.framePath?.length
+      && context.framePath?.length
+      && targetContext.framePath.length === context.framePath.length
+      && targetContext.framePath.every((part, index) => part === context.framePath?.[index])
+    );
   }
 
-  if (targetContext.hostSelector && context.hostSelector && targetContext.hostSelector !== context.hostSelector) {
-    return false;
+  // frameId is exact within the current document, but may change after reload.
+  // New annotations use framePath above; legacy annotations use a strict
+  // element-presence fallback in shouldHandleAnnotationAction.
+  if (targetFrameId !== undefined || currentFrameId !== undefined) {
+    return targetFrameId !== undefined
+      && currentFrameId !== undefined
+      && targetFrameId === currentFrameId;
+  }
+
+  if (targetContext.hostSelector || context.hostSelector) {
+    return Boolean(
+      targetContext.hostSelector
+      && context.hostSelector
+      && targetContext.hostSelector === context.hostSelector
+    );
   }
 
   return targetKind === currentKind;
+}
+
+function shouldUseLegacyIframeElementFallback(
+  targetContext: PageContext | undefined,
+  targetUrl: string,
+  context: PageContext
+): boolean {
+  if (!targetContext || targetContext.kind !== "iframe" || context.kind !== "iframe") return false;
+  if (targetContext.framePath?.length) return false;
+  const targetContextUrl = normalizeContextUrl(targetContext.url || targetUrl);
+  const currentContextUrl = normalizeContextUrl(context.url);
+  if (targetContextUrl !== currentContextUrl) return false;
+  const targetTopUrl = normalizeContextUrl(targetContext.topUrl || "");
+  const currentTopUrl = normalizeContextUrl(context.topUrl || "");
+  return !targetTopUrl || !currentTopUrl || targetTopUrl === currentTopUrl;
 }
 
 function normalizeContextUrl(value: string | undefined): string {
@@ -5018,7 +5206,7 @@ function getElementInspection(element: Element): HoverInspection {
     margin: getBoxValue(styles, "margin"),
     padding: getBoxValue(styles, "padding"),
     borderRadius: styles.borderRadius,
-    borderColor: styles.borderColor,
+    borderColor: getEffectiveBorderColor(styles),
     borderWidth: styles.borderWidth,
     width: styles.width,
     height: styles.height
@@ -5041,6 +5229,31 @@ function getIframesDeep(root: ParentNode | ShadowRoot): HTMLIFrameElement[] {
   const shadowIframes = Array.from(root.querySelectorAll("*"))
     .flatMap((element) => element.shadowRoot ? getIframesDeep(element.shadowRoot) : []);
   return [...iframes, ...shadowIframes];
+}
+
+async function elevateIframeAnnotationEditor(
+  annotation: DomAnnotation,
+  initialInspection: HoverInspection,
+  context: PageContext
+): Promise<IframeSelectionPayload> {
+  const element = initialInspection.element;
+  if (element?.isConnected) {
+    await scrollElementIntoViewAndWait(element);
+  }
+  requestContainingFrameReveal();
+  const inspection = element?.isConnected ? getElementInspection(element) : initialInspection;
+  return {
+    draft: {
+      ...getAnnotationDraft(annotation),
+      context,
+      pin: annotation.pin
+    },
+    inspection: serializeHoverInspection(inspection),
+    editingAnnotation: annotation,
+    inlineStyleSnapshot: element instanceof HTMLElement ? captureInlineStyleSnapshot(element) : {},
+    fontFamilies: getPageFontFamilyOptions().map((option) => option.value),
+    context
+  };
 }
 
 function createTopComposerStateFromIframeSelection(payload: IframeSelectionPayload, frameHost: HTMLIFrameElement): ComposerState {
@@ -5070,7 +5283,9 @@ function createTopComposerStateFromIframeSelection(payload: IframeSelectionPaylo
     scrollX: window.scrollX,
     scrollY: window.scrollY
   };
-  const draftPin = payload.draft.pin
+  const draftPin = payload.editingAnnotation
+    ? payload.draft.pin
+    : payload.draft.pin
     ? {
         x: payload.pointerViewport
           ? frameDocumentRect.x + payload.pointerViewport.x
@@ -5101,6 +5316,7 @@ function createTopComposerStateFromIframeSelection(payload: IframeSelectionPaylo
       documentRect
     },
     initialScreenshot: payload.initialScreenshot,
+    editingAnnotation: payload.editingAnnotation,
     remoteInlineStyleSnapshot: payload.inlineStyleSnapshot ?? {},
     fontFamilies: payload.fontFamilies
   };
@@ -5418,13 +5634,47 @@ function getComposerPosition(
 function focusAnnotation(id: string, annotations: DomAnnotation[]) {
   const annotation = annotations.find((item) => item.id === id);
   if (!annotation) return;
-  const rect = getAnnotationDocumentRect(annotation);
-  scrollToDocumentRect(rect);
+  const element = getAnnotationElement(annotation);
+  if (element) {
+    scrollElementIntoView(element);
+  } else {
+    scrollToDocumentRect(getAnnotationDocumentRect(annotation));
+  }
+  requestContainingFrameReveal();
 }
 
 function focusReference(reference: AnnotationReference) {
-  const rect = getReferenceDocumentRect(reference);
-  scrollToDocumentRect(rect);
+  const element = getReferenceElement(reference);
+  if (element) {
+    scrollElementIntoView(element);
+  } else {
+    scrollToDocumentRect(getReferenceDocumentRect(reference));
+  }
+  requestContainingFrameReveal();
+}
+
+function scrollElementIntoView(element: Element) {
+  element.scrollIntoView({
+    block: "center",
+    inline: "nearest",
+    behavior: "smooth"
+  });
+}
+
+async function scrollElementIntoViewAndWait(element: Element): Promise<void> {
+  scrollElementIntoView(element);
+  await waitForScrollToSettle(() => {
+    const rect = element.getBoundingClientRect();
+    return [window.scrollX, window.scrollY, rect.left, rect.top];
+  });
+}
+
+function requestContainingFrameReveal() {
+  if (!isEmbeddedFrameWindow()) return;
+  window.parent.postMessage({
+    source: "DOM_AI_ANNOTATOR",
+    type: "DOM_AI_REVEAL_FRAME_CHAIN"
+  } satisfies FrameIdentityMessage, "*");
 }
 
 function scrollToDocumentRect(rect: HoverInspection["documentRect"]) {
@@ -5434,6 +5684,39 @@ function scrollToDocumentRect(rect: HoverInspection["documentRect"]) {
     top: targetTop,
     left: 0,
     behavior: "smooth"
+  });
+}
+
+async function scrollToDocumentRectAndWait(rect: HoverInspection["documentRect"]): Promise<void> {
+  scrollToDocumentRect(rect);
+  await waitForScrollToSettle();
+}
+
+function waitForScrollToSettle(
+  sample: () => readonly number[] = () => [window.scrollX, window.scrollY]
+): Promise<void> {
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+    let previous = sample();
+    let stableFrames = 0;
+
+    const check = () => {
+      const next = sample();
+      if (next.length === previous.length && next.every((value, index) => Math.abs(value - previous[index]) < 0.5)) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+      }
+      previous = next;
+
+      if (stableFrames >= 3 || performance.now() - startedAt >= 900) {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(check);
+    };
+
+    window.requestAnimationFrame(check);
   });
 }
 

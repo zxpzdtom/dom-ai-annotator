@@ -158,6 +158,7 @@ export type ColorMode = "rgb" | "hex" | "hsl";
 export type IframeSelectionPayload = {
   draft: AnnotationDraft;
   inspection: SerializableHoverInspection;
+  editingAnnotation?: import("../shared/types").DomAnnotation;
   inlineStyleSnapshot?: InlineStyleSnapshot;
   fontFamilies?: string[];
   pointerViewport?: RectSnapshot;
