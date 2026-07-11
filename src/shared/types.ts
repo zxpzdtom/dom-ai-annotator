@@ -45,6 +45,7 @@ export type PageContext = {
   parentFrameId?: number;
   hostSelector?: string;
   hostUrl?: string;
+  framePath?: string[];
 };
 
 export type AnnotationScreenshot = {
@@ -176,7 +177,6 @@ export type RuntimeMessage =
   | { type: "DOM_AI_PAGE_CONTEXT_SELECTED"; context: PageContext }
   | { type: "DOM_AI_ANNOTATION_SAVED"; annotation: DomAnnotation }
   | { type: "DOM_AI_BROADCAST_CONTENT_MESSAGE"; message: ContentMessage }
-  | { type: "DOM_AI_OPEN_SIDE_PANEL" }
   | { type: "DOM_AI_GET_FRAME_CONTEXT" }
   | { type: "DOM_AI_MONITOR_EVENT"; event: MonitorEvent }
   | { type: "DOM_AI_RECORD_DEBUG_EVENT"; event: MonitorEvent }

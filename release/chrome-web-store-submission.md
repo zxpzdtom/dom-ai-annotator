@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.5.zip`
-- Version: `0.3.5`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.6.zip`
+- Version: `0.3.6`
 
 ## Listing
 
@@ -82,10 +82,19 @@ Suggested privacy form answers:
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
 
+## 0.3.6 Review Notes
+
+- Fixes toolbar icon toggling so the side panel opens and closes reliably, while the in-page capsule follows the panel lifecycle.
+- Distinguishes sibling iframes with stable frame host paths, preventing duplicate pins and preserving annotations after reload.
+- Elevates existing iframe annotation editors to the top page and reveals the target before opening the editor.
+- Keeps single-property style resets isolated and avoids treating inherited `currentColor` as an invisible border change.
+- Uses the same selection cursor icon in the side panel and the in-page toolbar.
+
 ## 0.3.5 Review Notes
 
 - Fixes wujie micro-app annotation handoff when the child iframe is hosted inside an open shadow root.
 - Refines the in-page drag handle icon with a lighter six-dot grip for compact and expanded annotation editors.
+- Fixes annotation focus for iframe targets so the outer page scroll container also reveals the iframe and the selected element.
 
 ## 0.3.4 Review Notes
 

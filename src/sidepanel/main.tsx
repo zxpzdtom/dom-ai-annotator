@@ -9,7 +9,6 @@ import {
   ChevronDown,
   Clipboard,
   Code2,
-  Crosshair,
   Eraser,
   FileInput,
   Filter,
@@ -46,6 +45,7 @@ import { getExcludedUrlReason, isExcludedUrl } from "../shared/excludedUrls";
 import { writeClipboardText } from "../shared/clipboard";
 import { formatAnnotationFeedbackForMarkdown, formatStyleChangesForMarkdown, getVisibleAnnotationComment } from "../shared/styleChanges";
 import { getAnnotationCodeSearchHints, getAnnotationTitle } from "../shared/annotationDisplay";
+import { ReviewCursorIcon } from "../shared/ReviewCursorIcon";
 
 type ActiveTab = {
   id?: number;
@@ -120,6 +120,7 @@ function App() {
   const [networkSort, setNetworkSort] = useState<NetworkSortState>(null);
   const [activeFrameContext, setActiveFrameContext] = useState<PageContext | null>(null);
   const userSelectedPageUrlRef = useRef(false);
+  const tabSwitchingRef = useRef(false);
 
   useEffect(() => {
     const syncVisibility = () => {
@@ -186,6 +187,7 @@ function App() {
 
   useEffect(() => {
     const handleTabActivated = () => {
+      tabSwitchingRef.current = true;
       setPageLoadTick((tick) => tick + 1);
       void refresh();
     };
@@ -318,7 +320,9 @@ function App() {
   useEffect(() => {
     if (!tab?.id || !canExposePageUi) return;
     const tabId = tab.id;
-    void ensureContentScript(tabId).then(async () => {
+    void isContentPanelActive(tabId).then(async (active) => {
+      if (!active) return;
+      await ensureContentScript(tabId);
       await setContentPanelVisible(tabId, true);
       if (canInspect && panelMode === "monitor") await enableMonitor();
       setError((current) => (isContentScriptErrorText(current) ? "" : current));
@@ -328,16 +332,23 @@ function App() {
   }, [canExposePageUi, canInspect, pageLoadTick, panelMode, tab?.id]);
 
   useEffect(() => {
-    if (!tab?.id || !canExposePageUi) return;
+    if (!tab?.id || !panelDocumentVisible) return;
     const tabId = tab.id;
+    tabSwitchingRef.current = false;
     const heartbeat = () => {
       void chrome.runtime.sendMessage({ type: "DOM_AI_PANEL_HEARTBEAT", tabId }).catch(() => undefined);
     };
 
     heartbeat();
     const timer = window.setInterval(heartbeat, PANEL_HEARTBEAT_INTERVAL_MS);
+    let closed = false;
     const close = () => {
+      if (closed) return;
+      closed = true;
       window.clearInterval(timer);
+      // A React cleanup caused by switching tabs must not clear the activation
+      // owned by the previous tab. Closing the panel itself has no tab switch.
+      if (tabSwitchingRef.current) return;
       void setContentPanelVisible(tabId, false).catch(() => undefined);
       void chrome.runtime.sendMessage({ type: "DOM_AI_PANEL_CLOSED", tabId }).catch(() => undefined);
     };
@@ -349,16 +360,19 @@ function App() {
       window.removeEventListener("beforeunload", close);
       close();
     };
-  }, [canExposePageUi, tab?.id]);
+  }, [panelDocumentVisible, tab?.id]);
 
   useEffect(() => {
     if (!tab?.id || !canExposePageUi || !isViewingActivePage) return;
     const tabId = tab.id;
     const timers = CONTENT_MOUNT_RETRY_DELAYS.map((delayMs) =>
       window.setTimeout(() => {
-        void ensureContentScript(tabId).then(() => {
-          void setContentPanelVisible(tabId, true).catch(() => undefined);
-          setError((current) => (isContentScriptErrorText(current) ? "" : current));
+        void isContentPanelActive(tabId).then((active) => {
+          if (!active) return;
+          return ensureContentScript(tabId).then(() => {
+            void setContentPanelVisible(tabId, true).catch(() => undefined);
+            setError((current) => (isContentScriptErrorText(current) ? "" : current));
+          });
         }).catch(() => undefined);
       }, delayMs)
     );
@@ -373,8 +387,10 @@ function App() {
       if (details.url && (!isInspectableUrl(details.url) || isExcludedUrl(details.url))) return;
       for (const delayMs of [80, 240, 600]) {
         window.setTimeout(() => {
-          void ensureContentScript(tabId)
-            .then(async () => {
+          void isContentPanelActive(tabId)
+            .then(async (active) => {
+              if (!active) return;
+              await ensureContentScript(tabId);
               await setContentPanelVisible(tabId, true);
               await sendTabMessageToFramesWithRetry(tabId, { type: "DOM_AI_REFRESH_PINS" });
             })
@@ -717,6 +733,7 @@ function App() {
     if (!tab?.id || !canInspect) return;
     setError("");
     try {
+      if (!await isContentPanelActive(tab.id)) return;
       await ensureContentScript(tab.id);
       await ensurePageMonitorBridge(tab.id);
       const snapshot = await sendContentMessage<MonitorSnapshot>(tab.id, { type: "DOM_AI_MONITOR_ENABLE" });
@@ -825,7 +842,7 @@ function App() {
               disabled={!canInspect}
               onClick={() => void startPicking()}
             >
-              <Crosshair size={16} />
+              <ReviewCursorIcon />
               选择元素
               <ShortcutBadge active>C</ShortcutBadge>
             </button>
@@ -2418,7 +2435,7 @@ function EmptyState({ onPick }: { onPick: () => void }) {
         className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0b1120] px-3.5 text-[13px] font-bold text-white shadow-[0_8px_18px_rgba(17,24,39,0.16)] transition-[background-color,transform] duration-150 hover:bg-[#1f2937] active:scale-[0.96]"
         onClick={onPick}
       >
-        <Crosshair size={16} />
+        <ReviewCursorIcon />
         选择元素
       </button>
     </div>
@@ -2463,6 +2480,8 @@ async function injectContentScript(tabId: number) {
 }
 
 async function setContentPanelVisible(tabId: number, active: boolean) {
+  if (active && !await isContentPanelActive(tabId)) return;
+
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: (isActive: boolean) => {
@@ -2472,6 +2491,14 @@ async function setContentPanelVisible(tabId: number, active: boolean) {
     },
     args: [active]
   });
+}
+
+async function isContentPanelActive(tabId: number) {
+  const state = await chrome.runtime.sendMessage({
+    type: "DOM_AI_GET_PANEL_STATE",
+    tabId
+  }) as { active?: boolean } | undefined;
+  return Boolean(state?.active);
 }
 
 async function ensurePageMonitorBridge(tabId: number) {

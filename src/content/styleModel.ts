@@ -254,6 +254,15 @@ export function getElementStyleTitle(inspection: HoverInspection): string {
   return inspection.element?.tagName.toLowerCase() || inspection.label || "元素";
 }
 
+export function getEffectiveBorderColor(styles: CSSStyleDeclaration): string {
+  const hasVisibleBorder = (["top", "right", "bottom", "left"] as const).some((side) => {
+    const width = Number.parseFloat(styles.getPropertyValue(`border-${side}-width`));
+    const style = styles.getPropertyValue(`border-${side}-style`);
+    return Number.isFinite(width) && width > 0 && style !== "none" && style !== "hidden";
+  });
+  return hasVisibleBorder ? styles.borderColor : "rgba(0, 0, 0, 0)";
+}
+
 export function createEditableStyleValues(inspection: HoverInspection): EditableStyleValues {
   const margin = splitBoxValue(inspection.margin);
   const padding = splitBoxValue(inspection.padding);
