@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.6.zip`
-- Version: `0.3.6`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.7.zip`
+- Version: `0.3.7`
 
 ## Listing
 
@@ -81,6 +81,12 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.7 Review Notes
+
+- Uses Chrome's native global side-panel behavior for toolbar toggling, closing, refreshes, and tab switching.
+- Removes custom per-tab and per-window side-panel state restoration that could conflict with Chrome's own open/closed state.
+- Keeps the page selector synchronized with the active tab, including after opening an annotation's source page.
 
 ## 0.3.6 Review Notes
 
