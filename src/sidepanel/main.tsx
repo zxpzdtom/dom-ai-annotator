@@ -223,17 +223,13 @@ function App() {
     setIsMeasuring(false);
     setActiveFrameContext(null);
     userSelectedPageUrlRef.current = false;
-  }, [currentUrl]);
-
-  useEffect(() => {
-    if (!currentUrl || isCurrentPageExcluded || selectedPageUrl) return;
-    setSelectedPageUrl(getPreferredActivePageUrl(currentUrl, annotations) || currentUrl);
-  }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
+    setSelectedPageUrl(currentUrl);
+  }, [currentUrl, isCurrentPageExcluded]);
 
   useEffect(() => {
     if (!currentUrl || isCurrentPageExcluded || userSelectedPageUrlRef.current) return;
-    const preferredUrl = getPreferredActivePageUrl(currentUrl, annotations);
-    if (preferredUrl && selectedPageUrl !== preferredUrl) setSelectedPageUrl(preferredUrl);
+    const preferredUrl = getPreferredActivePageUrl(currentUrl, annotations) || currentUrl;
+    if (selectedPageUrl !== preferredUrl) setSelectedPageUrl(preferredUrl);
   }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
 
   const pageOptions = useMemo(() => {
@@ -247,7 +243,7 @@ function App() {
         count: (existing?.count ?? 0) + 1
       });
     }
-    if (currentUrl && !isCurrentPageExcluded && !byUrl.has(currentUrl)) {
+    if (currentUrl && !byUrl.has(currentUrl)) {
       byUrl.set(currentUrl, { url: currentUrl, title: tab?.title || "当前页面", count: 0 });
     }
     if (activeFrameContext?.url && !isExcludedUrl(activeFrameContext.url) && !byUrl.has(activeFrameContext.url)) {
@@ -265,7 +261,7 @@ function App() {
   }, [activeFrameContext, annotations, currentUrl, isCurrentPageExcluded, tab?.title]);
 
   useEffect(() => {
-    if (selectedPageUrl && (isExcludedUrl(selectedPageUrl) || !pageOptions.some((item) => item.url === selectedPageUrl))) {
+    if (selectedPageUrl && !pageOptions.some((item) => item.url === selectedPageUrl)) {
       setSelectedPageUrl("");
     }
   }, [pageOptions, selectedPageUrl]);
@@ -726,7 +722,16 @@ function App() {
   }
 
   async function openUrl(url: string) {
-    await chrome.tabs.create({ url });
+    // This navigation is initiated from the panel itself. Mark it before
+    // creating the tab so an immediate pagehide cannot be mistaken for the
+    // user closing the side panel.
+    tabSwitchingRef.current = true;
+    try {
+      await chrome.tabs.create({ url, active: true });
+    } catch (error) {
+      tabSwitchingRef.current = false;
+      throw error;
+    }
   }
 
   async function enableMonitor() {
