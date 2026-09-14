@@ -71,6 +71,7 @@ import { getPinPalette, getStatusLabel, normalizeAnnotationStatus, severityLabel
 import { getVisibleAnnotationComment } from "../shared/styleChanges";
 import { getAnnotationTitle } from "../shared/annotationDisplay";
 import { ReviewCursorIcon } from "../shared/ReviewCursorIcon";
+import { installDomReviewWebMcp } from "./webMcp";
 
 const ROOT_ID = "dom-ai-annotator-root";
 const COMPOSER_WIDTH = 360;
@@ -142,6 +143,8 @@ const NUMERIC_SCRUB_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
     <path d="M8 15 5 12h2V8h2v4h2l-3 3Z" fill="#475569"/>
   </svg>`
 )}") 8 8, ns-resize`;
+
+installDomReviewWebMcp();
 
 type ComposerState = {
   draft: AnnotationDraft;
@@ -2095,7 +2098,7 @@ function Composer({
             placeholder={state.editingAnnotation ? "编辑评论..." : "添加评论..."}
             onChange={(event) => setComment(event.currentTarget.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 void save();
               }
@@ -2145,7 +2148,7 @@ function Composer({
               placeholder="描述这些更改..."
               onChange={(event) => setComment(event.currentTarget.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void save();
                 }

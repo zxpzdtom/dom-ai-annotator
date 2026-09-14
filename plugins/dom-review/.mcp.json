@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "dom-review-webmcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.9.0",
+        "--autoConnect",
+        "--categoryExperimentalWebmcp=true",
+        "--no-category-performance",
+        "--no-category-network",
+        "--no-category-emulation",
+        "--no-usage-statistics"
+      ],
+      "enabled": true,
+      "enabled_tools": [
+        "list_pages",
+        "list_webmcp_tools",
+        "execute_webmcp_tool",
+        "take_screenshot"
+      ],
+      "startup_timeout_sec": 30
+    }
+  }
+}

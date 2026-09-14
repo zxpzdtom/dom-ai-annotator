@@ -1,0 +1,36 @@
+{
+  "name": "dom-review",
+  "version": "0.1.0+codex.20260910103353",
+  "description": "Connect Codex to DOM Review annotations in the user's current Chrome session through WebMCP.",
+  "author": {
+    "name": "zxpzdtom",
+    "url": "https://github.com/zxpzdtom"
+  },
+  "homepage": "https://github.com/zxpzdtom/dom-ai-annotator",
+  "repository": "https://github.com/zxpzdtom/dom-ai-annotator",
+  "license": "MIT",
+  "keywords": [
+    "dom-review",
+    "webmcp",
+    "chrome",
+    "ui-feedback"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "DOM Review",
+    "shortDescription": "Fix and verify Chrome UI annotations through WebMCP",
+    "longDescription": "Connect Codex to the DOM Review Chrome extension through Google's official Chrome DevTools MCP bridge. Read, update, delete, focus, and verify page-scoped UI annotations while keeping extension data local to the user's browser.",
+    "developerName": "zxpzdtom",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/zxpzdtom/dom-ai-annotator",
+    "defaultPrompt": [
+      "Read my open DOM Review annotations, fix them, verify the result, and update their statuses."
+    ],
+    "brandColor": "#0F172A"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -59,6 +59,8 @@ export type AnnotationScreenshot = {
   };
 };
 
+export type AnnotationScreenshotVariant = "before" | "after";
+
 export type AnnotationStyleChange = {
   property: string;
   label: string;
@@ -173,6 +175,8 @@ export type ContentMessage =
 
 export type RuntimeMessage =
   | ContentMessage
+  | { type: "DOM_AI_WEBMCP_FOCUS_ANNOTATION"; id: string }
+  | { type: "DOM_AI_WEBMCP_SHOW_ANNOTATION_SNAPSHOT"; id: string; variant: AnnotationScreenshotVariant }
   | { type: "DOM_AI_DRAFT_READY"; draft: AnnotationDraft }
   | { type: "DOM_AI_PAGE_CONTEXT_SELECTED"; context: PageContext }
   | { type: "DOM_AI_ANNOTATION_SAVED"; annotation: DomAnnotation }

@@ -1,5 +1,6 @@
 import { isExcludedUrl } from "./shared/excludedUrls";
-import type { MonitorEvent, MonitorEventKind, PageContext, RuntimeMessage } from "./shared/types";
+import { getAnnotations } from "./shared/storage";
+import type { AnnotationScreenshotVariant, MonitorEvent, MonitorEventKind, PageContext, RuntimeMessage } from "./shared/types";
 
 const DEBUG_STORAGE_PREFIX = "domAiDebugEvents:";
 const SIDE_PANEL_PATH = "src/sidepanel/index.html";
@@ -63,6 +64,30 @@ async function configureNativeSidePanel() {
 }
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message.type === "DOM_AI_WEBMCP_SHOW_ANNOTATION_SNAPSHOT") {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ shown: false, error: "WebMCP tool is not running in a browser tab." });
+      return true;
+    }
+    void showWebMcpAnnotationSnapshot(tabId, sender.tab?.url, message.id, message.variant)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ shown: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message.type === "DOM_AI_WEBMCP_FOCUS_ANNOTATION") {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ focused: false, error: "WebMCP tool is not running in a browser tab." });
+      return true;
+    }
+    void focusWebMcpAnnotation(tabId, sender.tab?.url, message.id)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ focused: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
   if (message.type === "DOM_AI_GET_FRAME_CONTEXT") {
     const context: PageContext = {
       kind: sender.frameId && sender.frameId > 0 ? "iframe" : "top",
@@ -159,6 +184,48 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     return true;
   }
 });
+
+async function focusWebMcpAnnotation(tabId: number, tabUrl: string | undefined, id: string) {
+  const annotation = (await getAnnotations()).find((item) => item.id === id);
+  if (!annotation) throw new Error(`DOM Review annotation not found: ${id}`);
+
+  const targetUrls = [annotation.url, annotation.context?.topUrl, annotation.context?.hostUrl]
+    .filter((value): value is string => Boolean(value));
+  if (tabUrl && !targetUrls.includes(tabUrl)) {
+    throw new Error("This annotation belongs to another page. Open that page before focusing it.");
+  }
+
+  await sendContentMessage(tabId, { type: "DOM_AI_FOCUS_ANNOTATION", id });
+  return { focused: true, id, url: tabUrl };
+}
+
+async function showWebMcpAnnotationSnapshot(
+  tabId: number,
+  tabUrl: string | undefined,
+  id: string,
+  variant: AnnotationScreenshotVariant
+) {
+  const annotation = (await getAnnotations()).find((item) => item.id === id);
+  if (!annotation) throw new Error(`DOM Review annotation not found: ${id}`);
+
+  const targetUrls = [annotation.url, annotation.context?.topUrl, annotation.context?.hostUrl]
+    .filter((value): value is string => Boolean(value));
+  if (tabUrl && !targetUrls.includes(tabUrl)) {
+    throw new Error("This annotation belongs to another page. Open that page before showing its snapshot.");
+  }
+
+  const screenshot = variant === "after" ? annotation.screenshotAfter : annotation.screenshot;
+  if (!screenshot) throw new Error(`This annotation does not have a ${variant} snapshot.`);
+
+  await sendContentMessage(tabId, { type: "DOM_AI_SHOW_IMAGE_PREVIEW", dataUrl: screenshot.dataUrl });
+  return {
+    shown: true,
+    id,
+    variant,
+    captured_at: screenshot.capturedAt,
+    visible_rect: screenshot.visibleRect
+  };
+}
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
