@@ -895,9 +895,9 @@ function SuspiciousRulesPanel({
   const [editDraft, setEditDraft] = useState<{ label: string; description: string; severity: RuleSeverity; conditions: RuleCondition[] }>({ label: "", description: "", severity: "warn", conditions: [] });
   const [isNewRule, setIsNewRule] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const confirmResetTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const confirmResetTimerRef = useRef<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const confirmDeleteTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const confirmDeleteTimerRef = useRef<number | null>(null);
 
   const activeCount = rules.filter((r) => r.enabled).length;
 

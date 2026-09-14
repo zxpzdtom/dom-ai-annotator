@@ -1,0 +1,20 @@
+{
+  "name": "dom-review",
+  "interface": {
+    "displayName": "DOM Review"
+  },
+  "plugins": [
+    {
+      "name": "dom-review",
+      "source": {
+        "source": "local",
+        "path": "./plugins/dom-review"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

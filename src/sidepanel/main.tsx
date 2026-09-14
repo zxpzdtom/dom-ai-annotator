@@ -37,6 +37,7 @@ import {
   normalizeStatus,
   saveAnnotations,
   subscribeAnnotations,
+  updateAnnotationStatus,
   updateAnnotationStatusesByIds,
   updateAnnotationStatusesForUrl
 } from "../shared/storage";
@@ -223,17 +224,13 @@ function App() {
     setIsMeasuring(false);
     setActiveFrameContext(null);
     userSelectedPageUrlRef.current = false;
-  }, [currentUrl]);
-
-  useEffect(() => {
-    if (!currentUrl || isCurrentPageExcluded || selectedPageUrl) return;
-    setSelectedPageUrl(getPreferredActivePageUrl(currentUrl, annotations) || currentUrl);
-  }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
+    setSelectedPageUrl(currentUrl);
+  }, [currentUrl, isCurrentPageExcluded]);
 
   useEffect(() => {
     if (!currentUrl || isCurrentPageExcluded || userSelectedPageUrlRef.current) return;
-    const preferredUrl = getPreferredActivePageUrl(currentUrl, annotations);
-    if (preferredUrl && selectedPageUrl !== preferredUrl) setSelectedPageUrl(preferredUrl);
+    const preferredUrl = getPreferredActivePageUrl(currentUrl, annotations) || currentUrl;
+    if (selectedPageUrl !== preferredUrl) setSelectedPageUrl(preferredUrl);
   }, [annotations, currentUrl, isCurrentPageExcluded, selectedPageUrl]);
 
   const pageOptions = useMemo(() => {
@@ -247,7 +244,7 @@ function App() {
         count: (existing?.count ?? 0) + 1
       });
     }
-    if (currentUrl && !isCurrentPageExcluded && !byUrl.has(currentUrl)) {
+    if (currentUrl && !byUrl.has(currentUrl)) {
       byUrl.set(currentUrl, { url: currentUrl, title: tab?.title || "当前页面", count: 0 });
     }
     if (activeFrameContext?.url && !isExcludedUrl(activeFrameContext.url) && !byUrl.has(activeFrameContext.url)) {
@@ -265,7 +262,7 @@ function App() {
   }, [activeFrameContext, annotations, currentUrl, isCurrentPageExcluded, tab?.title]);
 
   useEffect(() => {
-    if (selectedPageUrl && (isExcludedUrl(selectedPageUrl) || !pageOptions.some((item) => item.url === selectedPageUrl))) {
+    if (selectedPageUrl && !pageOptions.some((item) => item.url === selectedPageUrl)) {
       setSelectedPageUrl("");
     }
   }, [pageOptions, selectedPageUrl]);
@@ -726,7 +723,16 @@ function App() {
   }
 
   async function openUrl(url: string) {
-    await chrome.tabs.create({ url });
+    // This navigation is initiated from the panel itself. Mark it before
+    // creating the tab so an immediate pagehide cannot be mistaken for the
+    // user closing the side panel.
+    tabSwitchingRef.current = true;
+    try {
+      await chrome.tabs.create({ url, active: true });
+    } catch (error) {
+      tabSwitchingRef.current = false;
+      throw error;
+    }
   }
 
   async function enableMonitor() {
@@ -1411,6 +1417,7 @@ function AnnotationCard({
                 onClick={async (e) => {
                   e.stopPropagation();
                   await writeClipboardText(formatFixPrompt(annotation));
+                  await updateAnnotationStatus(annotation.id, "sent");
                   setFixCopied(true);
                   window.setTimeout(() => setFixCopied(false), 2000);
                 }}
@@ -2647,10 +2654,11 @@ function formatFixPrompt(annotation: DomAnnotation): string {
   return [
     "# 给 AI 修复的界面反馈",
     "",
-    "请修复下面的界面问题。请结合选择器、XPath、元素信息、位置和关键样式定位代码中的相关组件；如果无法安全修改，请说明原因。",
+    "请修复下面的界面问题。请结合选择器、XPath、元素信息、位置和关键样式定位代码中的相关组件。优先修改项目源代码，不要直接修改临时预览文件、构建产物或 DOM Review 保存的页面快照；如果无法安全修改，请说明原因。",
     "",
     `## 问题：${(getVisibleAnnotationComment(annotation) || annotation.styleChanges?.[0]?.label || "样式变更").split("\n")[0]}`,
     "",
+    `- **标注 ID:** \`${annotation.id}\``,
     `- **选择器:** \`${annotation.selector}\``,
     annotation.xpath ? `- **XPath:** \`${annotation.xpath}\`` : undefined,
     `- **元素:** \`${elDesc}\``,
@@ -2671,7 +2679,8 @@ function formatFixPrompt(annotation: DomAnnotation): string {
     annotation.feedback.expected ? `\n### 期望效果\n\n${annotation.feedback.expected}` : undefined,
     "",
     "---",
-    "修复完成后，请总结修改内容，并在 DOM Review 中把该标注流转到合适状态。",
+    "修复完成后，请总结修改内容，并将该标注流转到与处理结果一致的状态。",
+    `如果当前页面提供了 DOM Review 的 \`dom_review_*\` Site Tools，请实际更新标注 \`${annotation.id}\`；否则只报告建议状态，不要声称已经更新。`,
   ].filter((l): l is string => l !== undefined).join("\n");
 }
 

@@ -2,8 +2,8 @@
 
 ## Package
 
-- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.6.zip`
-- Version: `0.3.6`
+- Extension zip: `/Users/tom/code/dom-ai-annotator/release/dom-ai-annotator-0.3.8.zip`
+- Version: `0.3.8`
 
 ## Listing
 
@@ -28,6 +28,7 @@ DOM Review 是一个 Chrome 侧边栏工具，用来在真实网页上选择 DOM
 - 支持从 Markdown 粘贴导入标注，复现原页面点位。
 - 选择元素时自动保存局部快照，帮助复核视觉上下文。
 - AI Debug 面板可查看可疑事件、Console、Network 和自定义检测规则，默认使用中文界面。
+- 支持 WebMCP Site Tools；兼容的浏览器 Agent 可在用户授权的当前页面读取、编辑、定位和更新标注状态。
 
 适合产品、设计、前端开发和 AI 编程工作流使用，减少截图沟通中的上下文丢失。
 
@@ -81,6 +82,20 @@ Suggested privacy form answers:
 ## Review Notes
 
 This extension is a local productivity tool for reviewing webpages. It runs only when the user opens the side panel or starts annotation/measurement. Data remains in local Chrome storage unless the user explicitly copies Markdown or manually exports it.
+
+## 0.3.8 Review Notes
+
+- Adds page-scoped WebMCP Site Tools for listing, reading, editing, deleting, focusing, and updating DOM Review annotations.
+- Adds snapshot metadata retrieval, optional Base64 image access, and in-page snapshot preview tools for visual verification.
+- Registers WebMCP tools only when the browser exposes `document.modelContext`; existing annotation and export workflows continue to work without WebMCP support.
+- Keeps annotation data in local Chrome extension storage and does not add a remote service, external network endpoint, or new extension permission.
+- Fixes Enter-to-save behavior in the annotation composer and marks copied pending feedback as sent.
+
+## 0.3.7 Review Notes
+
+- Uses Chrome's native global side-panel behavior for toolbar toggling, closing, refreshes, and tab switching.
+- Removes custom per-tab and per-window side-panel state restoration that could conflict with Chrome's own open/closed state.
+- Keeps the page selector synchronized with the active tab, including after opening an annotation's source page.
 
 ## 0.3.6 Review Notes
 

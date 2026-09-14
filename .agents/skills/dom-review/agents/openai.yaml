@@ -1,0 +1,8 @@
+interface:
+  display_name: "DOM Review"
+  short_description: "通过 WebMCP 处理 DOM 界面标注并同步验证状态"
+  brand_color: "#0F172A"
+  default_prompt: "Use $dom-review to inspect the current page's UI annotations, implement the requested fixes, verify them, and update their statuses."
+
+policy:
+  allow_implicit_invocation: true

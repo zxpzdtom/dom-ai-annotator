@@ -98,7 +98,7 @@ function installConsoleMonitor() {
 
   console.assert = (condition?: boolean, ...args: unknown[]) => {
     if (!condition) emitConsole("error", ["Assertion failed:", ...args], getStack());
-    original.assert?.call(console, condition, ...args);
+    (original.assert as ((condition?: boolean, ...data: unknown[]) => void) | undefined)?.call(console, condition, ...args);
   };
 
   console.dir = (...args: unknown[]) => {
